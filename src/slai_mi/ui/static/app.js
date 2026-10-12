@@ -1,3 +1,15 @@
+const DASHBOARD_LAN_HOST = "192.168.1.102";
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
+
+if (LOOPBACK_HOSTS.has(window.location.hostname)) {
+  const host = window.location.port
+    ? `${DASHBOARD_LAN_HOST}:${window.location.port}`
+    : DASHBOARD_LAN_HOST;
+  window.location.replace(
+    `${window.location.protocol}//${host}${window.location.pathname}${window.location.search}${window.location.hash}`,
+  );
+}
+
 const CAMERA_ORDER = ["secondary", "primary", "wrist"];
 const CAMERA_LABELS = {
   secondary: "CAM 01 - LEFT",
@@ -80,6 +92,7 @@ function createCameraPreview(figure) {
   let request = null;
   let retryTimer = null;
   let snapshotTimer = null;
+  let snapshotProbe = null;
   let retryDelay = 250;
   let stopped = false;
   let generation = 0;
@@ -88,9 +101,25 @@ function createCameraPreview(figure) {
     figure.dataset.frame = String(visible);
     figure.dataset.webrtc = String(webrtc);
   };
+  const showFallback = () => {
+    setFrame(Boolean(image.complete && image.naturalWidth > 0), false);
+  };
   const loadSnapshot = () => {
-    if (stopped || document.hidden) return;
-    image.src = `/api/cameras/${encodeURIComponent(role)}/frame.jpg?t=${Date.now()}`;
+    if (stopped || document.hidden || snapshotProbe != null) return;
+    const probe = new Image();
+    snapshotProbe = probe;
+    probe.addEventListener("load", () => {
+      if (snapshotProbe !== probe) return;
+      snapshotProbe = null;
+      image.src = probe.src;
+    });
+    probe.addEventListener("error", () => {
+      if (snapshotProbe !== probe) return;
+      snapshotProbe = null;
+      showFallback();
+      scheduleSnapshot();
+    });
+    probe.src = `/api/cameras/${encodeURIComponent(role)}/frame.jpg?t=${Date.now()}`;
   };
   const scheduleRetry = () => {
     if (stopped || document.hidden || retryTimer != null) return;
@@ -154,7 +183,7 @@ function createCameraPreview(figure) {
       };
       connection.onconnectionstatechange = () => {
         if (peer === connection && ["failed", "disconnected", "closed"].includes(connection.connectionState)) {
-          setFrame(false, false);
+          showFallback();
           loadSnapshot();
           scheduleRetry();
         }
@@ -189,7 +218,7 @@ function createCameraPreview(figure) {
     } catch (_) {
       if (stopped || document.hidden || currentGeneration !== generation) return;
       closePeer();
-      setFrame(false, false);
+      showFallback();
       loadSnapshot();
       scheduleRetry();
     }
@@ -201,12 +230,8 @@ function createCameraPreview(figure) {
     }
     if (figure.dataset.webrtc !== "true") setFrame(true, false);
   });
-  image.addEventListener("error", () => {
-    if (figure.dataset.webrtc !== "true") setFrame(false, false);
-    scheduleSnapshot();
-  });
   video.addEventListener("error", () => {
-    setFrame(false, false);
+    showFallback();
     loadSnapshot();
     scheduleRetry();
   });
@@ -227,6 +252,7 @@ function createCameraPreview(figure) {
       if (snapshotTimer != null) window.clearTimeout(snapshotTimer);
       retryTimer = null;
       snapshotTimer = null;
+      snapshotProbe = null;
       closePeer();
       setFrame(false, false);
     },
@@ -241,7 +267,6 @@ function renderCameraStatus(cameras) {
     const online = Boolean(camera.connected && camera.valid && camera.age_ms != null);
     const slow = online && Number(camera.age_ms) >= 100;
     figure.dataset.online = String(online);
-    if (!online) figure.dataset.frame = "false";
     figure.dataset.slow = String(slow);
     figure.querySelector(".camera-latency").textContent = online
       ? `Lat: ${Number(camera.age_ms).toFixed(0)}ms`
@@ -290,7 +315,93 @@ function renderEvents(events) {
   if (shouldFollow) list.scrollTop = list.scrollHeight;
 }
 
+function metricValue(value) {
+  return value == null ? "—" : String(Number(value));
+}
+
+function historyTime(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value || "—");
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(date);
+}
+
+function renderCollectionHistory(history) {
+  const summary = history.summary || {};
+  const taskId = String(summary.task_id || summary.task || "DATASET");
+  document.getElementById("collection-task").textContent = taskId.toUpperCase();
+  document.getElementById("collection-task").title = String(summary.task || taskId);
+  document.getElementById("collection-dataset").textContent = summary.dataset || "data/lerobot";
+  document.getElementById("metric-saved").textContent = metricValue(summary.saved);
+  document.getElementById("metric-attempts").textContent = metricValue(summary.attempts);
+  document.getElementById("metric-discarded").textContent = metricValue(summary.discarded);
+  document.getElementById("metric-history-saved").textContent = metricValue(summary.history_saved);
+
+  const list = document.querySelector(".history-list");
+  const sessions = Array.isArray(history.sessions) ? history.sessions : [];
+  if (!sessions.length) {
+    const empty = document.createElement("div");
+    empty.className = "history-row empty";
+    empty.textContent = "data/lerobot 中还没有可显示的数据集";
+    list.replaceChildren(empty);
+    return;
+  }
+  list.replaceChildren(...sessions.map((session) => {
+    const row = document.createElement("div");
+    row.className = "history-row";
+    row.title = session.dataset_path || session.dataset || "";
+    const values = [
+      historyTime(session.time),
+      session.task || "—",
+      metricValue(session.attempts),
+      metricValue(session.saved),
+      metricValue(session.discarded),
+      session.dataset || "—",
+    ];
+    for (const value of values) {
+      const cell = document.createElement("span");
+      cell.textContent = value;
+      row.appendChild(cell);
+    }
+    return row;
+  }));
+}
+
+let historyRequest = null;
+let historyRetryTimer = null;
+
+async function refreshCollectionHistory() {
+  if (historyRequest) return historyRequest;
+  if (historyRetryTimer != null) {
+    window.clearTimeout(historyRetryTimer);
+    historyRetryTimer = null;
+  }
+  historyRequest = fetch("/api/collection-history", {cache: "no-store"})
+    .then((response) => {
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return response.json();
+    })
+    .then(renderCollectionHistory)
+    .catch(() => {
+      document.getElementById("collection-dataset").textContent = "data/lerobot 读取失败";
+      const list = document.querySelector(".history-list");
+      const error = document.createElement("div");
+      error.className = "history-row empty";
+      error.textContent = "历史接口暂时不可用，请刷新页面";
+      list.replaceChildren(error);
+      historyRetryTimer = window.setTimeout(refreshCollectionHistory, 2000);
+    })
+    .finally(() => { historyRequest = null; });
+  return historyRequest;
+}
+
 let lastEventSignature = "";
+let lastHistorySignature = "";
 
 function renderRecordingStatus(status) {
   const indicator = document.querySelector(".record-indicator");
@@ -302,14 +413,31 @@ function renderRecordingStatus(status) {
   document.getElementById("record-label").textContent = detail
     ? `${status.phase_label || "准备中"} · ${detail}`
     : (status.phase_label || "准备中");
-  const temperature = status.temperature || {};
-  const temperatureBox = document.querySelector(".temperature-status");
-  temperatureBox.dataset.level = String(temperature.level || "unknown");
-  temperatureBox.querySelector("strong").textContent = temperature.max_c == null
-    ? "--"
-    : `${Number(temperature.max_c).toFixed(1)}°C`;
+  renderTemperature(status.temperature || {});
   const events = Array.isArray(status.events) ? [...status.events].reverse() : [];
   renderEvents(events);
+}
+
+function renderTemperature(temperature) {
+  const box = document.querySelector(".temperature-status");
+  const maximum = Number(temperature.max_c);
+  const available = Boolean(temperature.available && Number.isFinite(maximum));
+  const level = available ? String(temperature.level || "normal") : "unknown";
+  box.dataset.available = String(available);
+  box.dataset.level = level;
+  box.querySelector("strong").textContent = available ? `${maximum.toFixed(1)}°C` : "--";
+
+  const values = Array.isArray(temperature.values)
+    ? temperature.values.map(Number).filter(Number.isFinite)
+    : [];
+  if (!available) {
+    box.title = "WujiHand temperature is waiting for the collection process";
+    return;
+  }
+  const minimum = values.length ? Math.min(...values) : maximum;
+  const warning = Number(temperature.warning_c);
+  const threshold = Number.isFinite(warning) ? ` · warning ${warning.toFixed(0)}°C` : "";
+  box.title = `${values.length || 1} joints · ${minimum.toFixed(1)}–${maximum.toFixed(1)}°C${threshold}`;
 }
 
 function renderDevices(devices) {
@@ -323,7 +451,7 @@ function renderDevices(devices) {
 async function loadSpaceMouseMap() {
   const host = document.getElementById("spacemouse-container");
   try {
-    const response = await fetch("/spacemouse-input-map.svg?v=20260823-4");
+    const response = await fetch("/spacemouse-input-map.svg?v=20260823-5");
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     host.innerHTML = await response.text();
     const svg = host.querySelector("svg");
@@ -352,10 +480,16 @@ function positionSpaceMousePuck() {
 }
 
 function setSpaceMouseButtons(buttons) {
-  const aliases = {rear: "r", front: "f"};
+  const aliases = {
+    rear: ["r"],
+    front: ["f"],
+    rotation_lock: ["lock"],
+    roll_cw: ["roll"],
+  };
   for (const button of document.querySelectorAll("#spacemouse-container [data-button]")) {
     const name = button.dataset.button;
-    button.dataset.pressed = String(Boolean(buttons?.[name] || buttons?.[aliases[name]]));
+    const names = [name, ...(aliases[name] || [])];
+    button.dataset.pressed = String(names.some((candidate) => Boolean(buttons?.[candidate])));
   }
 }
 
@@ -390,6 +524,12 @@ function renderMouse(state) {
 }
 
 function renderStatus(status) {
+  const collectionActive = Boolean(status.dataset_path);
+  const eventPanel = document.querySelector(".event-panel");
+  eventPanel.dataset.collectionActive = String(collectionActive);
+  document.getElementById("event-panel-title").textContent = collectionActive
+    ? "System Events Log"
+    : "Dataset Overview";
   renderCameraStatus(Array.isArray(status.cameras) ? status.cameras : []);
   const eventSignature = JSON.stringify([
     status.phase,
@@ -401,6 +541,11 @@ function renderStatus(status) {
   if (eventSignature !== lastEventSignature) {
     lastEventSignature = eventSignature;
     renderRecordingStatus(status);
+  }
+  const historySignature = collectionActive ? "active" : "idle";
+  if (!collectionActive && historySignature !== lastHistorySignature) {
+    lastHistorySignature = historySignature;
+    refreshCollectionHistory();
   }
   renderDevices(status.devices || {});
 }
@@ -467,5 +612,10 @@ function connectSpaceMouseStream() {
 }
 
 loadSpaceMouseMap();
+refreshCollectionHistory();
 connectStatusStream();
 connectSpaceMouseStream();
+window.setInterval(() => {
+  const panel = document.querySelector(".event-panel");
+  if (panel?.dataset.collectionActive === "false") refreshCollectionHistory();
+}, 5000);

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -31,8 +32,11 @@ class ContractDatasetWriter:
 
     def finalize(self) -> None:
         self._dataset.finalize()
-        if int(self._dataset.meta.total_episodes) > 0:
-            self.validation_report = validate_dataset_root(self._root)
+        if int(self._dataset.meta.total_episodes) == 0:
+            if self._root.exists():
+                shutil.rmtree(self._root)
+            return
+        self.validation_report = validate_dataset_root(self._root)
 
 
 def create_dataset(*, repo_id: str, root: Path, fps: int = FPS):

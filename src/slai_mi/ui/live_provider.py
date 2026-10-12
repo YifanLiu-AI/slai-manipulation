@@ -1,7 +1,8 @@
-"""Read-only live camera and SpaceMouse provider for the collection dashboard."""
+"""Live camera and physical SpaceMouse provider for the collection dashboard."""
 
 from __future__ import annotations
 
+import subprocess
 import threading
 import time
 from io import BytesIO
@@ -11,8 +12,9 @@ import numpy as np
 from PIL import Image
 
 from slai_mi.devices.cameras import CameraConfig, RealSenseCapture, validate_camera_set
-from slai_mi.devices.spacemouse.buttons import BUTTON_NAME_BY_CODE
+from slai_mi.devices.spacemouse.buttons import BUTTON_NAME_BY_CODE, Button
 from slai_mi.devices.spacemouse.client import SpaceMouseProcess
+from slai_mi.devices.spacemouse.gestures import RepeatedChordGesture
 from slai_mi.input_schema import enabled_cameras, load_input_schema
 from slai_mi.ui.collection_frontend import dashboard_status_template
 from slai_mi.ui.webrtc_preview import H264PreviewPublisher
@@ -22,7 +24,11 @@ class LiveStatusProvider:
     """Monitor configured input devices without exposing any motion command."""
 
     def __init__(
-        self, hardware: dict[str, Any], *, monitor_spacemouse: bool = True
+        self,
+        hardware: dict[str, Any],
+        *,
+        monitor_spacemouse: bool = True,
+        collection_service: str | None = None,
     ) -> None:
         self.hardware = hardware
         self.schema = load_input_schema(hardware.get("input_schema"))
@@ -49,11 +55,9 @@ class LiveStatusProvider:
             height=int(image_height),
             fps=int(self.schema["capture"]["fps"]),
         )
-        self.mouse = (
-            SpaceMouseProcess(deadzone=0.12, stale_timeout=0.05, rate_hz=250.0)
-            if monitor_spacemouse
-            else None
-        )
+        self._monitor_spacemouse = monitor_spacemouse
+        self.collection_service = collection_service
+        self.mouse = self._new_mouse() if monitor_spacemouse else None
         self._frames: dict[str, Any] = {}
         self._jpeg_cache: dict[str, tuple[float, bytes]] = {}
         self._counts = {item.name: 0 for item in configs}
@@ -67,6 +71,15 @@ class LiveStatusProvider:
         self._mouse_buttons: dict[int, bool] = {}
         self._mouse_sample_at = 0.0
         self._last_mouse_activity: float | None = None
+        self._collection_start_requested = False
+        self._collection_start_error: str | None = None
+        self._collection_gesture = RepeatedChordGesture(
+            (int(Button.MENU), int(Button.FIT)), repeats=2, timeout_s=5.0
+        )
+
+    @staticmethod
+    def _new_mouse() -> SpaceMouseProcess:
+        return SpaceMouseProcess(deadzone=0.12, stale_timeout=0.05, rate_hz=250.0)
 
     def start(self) -> None:
         self.capture.start()
@@ -96,12 +109,38 @@ class LiveStatusProvider:
                     self._mouse_motion = np.asarray(motion, dtype=np.float32)
                     self._mouse_buttons = {int(key): bool(value) for key, value in buttons.items()}
                     self._mouse_sample_at = now
-                if bool(np.any(np.abs(self._mouse_motion) > 0.0)):
+                cap_active = bool(np.any(np.abs(self._mouse_motion) > 0.0))
+                if cap_active:
                     self._last_mouse_activity = now
+                    self._collection_gesture.reset()
+                if (
+                    self.collection_service
+                    and not cap_active
+                    and not self._collection_start_requested
+                    and self._collection_gesture.update(buttons, now)
+                ):
+                    self._request_collection_start()
             except RuntimeError as exc:
                 self._errors["spacemouse"] = str(exc)
                 return
             time.sleep(0.001)
+
+    def _request_collection_start(self) -> None:
+        if self.collection_service is None:
+            return
+        with self._lock:
+            self._collection_start_requested = True
+            self._collection_start_error = None
+        try:
+            subprocess.run(
+                ["systemctl", "--user", "start", "--no-block", self.collection_service],
+                check=True,
+            )
+        except (OSError, subprocess.CalledProcessError) as exc:
+            with self._lock:
+                self._collection_start_requested = False
+                self._collection_start_error = f"数采服务启动失败: {exc}"
+            self._collection_gesture.reset()
 
     def _read_loop(self) -> None:
         while not self._stop.is_set():
@@ -132,8 +171,11 @@ class LiveStatusProvider:
             self._mouse_thread = None
         self.capture.stop()
         self.preview.stop()
-        if self.mouse is not None:
-            self.mouse.stop()
+        with self._lock:
+            mouse = self.mouse
+            self.mouse = None
+        if mouse is not None:
+            mouse.stop()
 
     def status(self) -> dict[str, Any]:
         status = dashboard_status_template(self.hardware, task="独立设备监测")
@@ -171,10 +213,14 @@ class LiveStatusProvider:
                     "drops": 0,
                 }
             )
-        if self.mouse is None:
+        with self._lock:
+            mouse = self.mouse
+            collection_start_requested = self._collection_start_requested
+            collection_start_error = self._collection_start_error
+        if mouse is None:
             motion, buttons = np.zeros(6), {}
             mouse_sample_at = 0.0
-            mouse_error = "SpaceMouse 由遥操作进程占用"
+            mouse_error = collection_start_error
         else:
             with self._lock:
                 motion = self._mouse_motion.copy()
@@ -191,6 +237,8 @@ class LiveStatusProvider:
                 "cameras": cameras,
             }
         )
+        if collection_start_requested:
+            status.update({"phase": "switching", "phase_label": "正在切换到腕部数采"})
         status["spacemouse"].update(
             {
                 "connected": mouse_error is None,
@@ -218,10 +266,13 @@ class LiveStatusProvider:
         return status
 
     def spacemouse_status(self) -> dict[str, Any]:
-        if self.mouse is None:
+        with self._lock:
+            mouse = self.mouse
+            collection_start_error = self._collection_start_error
+        if mouse is None:
             motion, buttons = np.zeros(6), {}
             mouse_sample_at = 0.0
-            mouse_error = "SpaceMouse 由遥操作进程占用"
+            mouse_error = collection_start_error
         else:
             with self._lock:
                 motion = self._mouse_motion.copy()
@@ -269,6 +320,13 @@ class LiveStatusProvider:
 
 
 def factory(
-    hardware: dict[str, Any], *, monitor_spacemouse: bool = True
+    hardware: dict[str, Any],
+    *,
+    monitor_spacemouse: bool = True,
+    collection_service: str | None = None,
 ) -> LiveStatusProvider:
-    return LiveStatusProvider(hardware, monitor_spacemouse=monitor_spacemouse)
+    return LiveStatusProvider(
+        hardware,
+        monitor_spacemouse=monitor_spacemouse,
+        collection_service=collection_service,
+    )

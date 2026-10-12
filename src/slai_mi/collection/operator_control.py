@@ -52,6 +52,8 @@ class SpaceMouseEpisodeControls:
         if rising[self.rotation_lock_button]:
             self.recording = False
             return EpisodeAction.FINALIZE
+        if bool(buttons.get(self.menu_button)) and bool(buttons.get(self.fit_button)):
+            return None
         if self.recording:
             if rising[self.esc_button]:
                 self.recording = False

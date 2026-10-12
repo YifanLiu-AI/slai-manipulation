@@ -18,6 +18,7 @@ from urllib.parse import unquote, urlparse
 
 import yaml
 
+from slai_mi.collection.history import build_collection_history
 from slai_mi.datasets.lerobot_v3.schema import RECORDED_BUTTON_NAMES
 from slai_mi.input_schema import enabled_cameras, load_input_schema
 from slai_mi.runtime import StrategyProfileError, load_strategy_profile
@@ -104,6 +105,16 @@ class DashboardRuntime:
         with self._lock:
             frame = self._provider.camera_jpeg(key)
             return bytes(frame) if frame is not None else None
+
+    def collection_history(self) -> dict[str, Any]:
+        with self._lock:
+            provider_method = getattr(self._provider, "collection_history", None)
+            if callable(provider_method):
+                return copy.deepcopy(provider_method())
+            return build_collection_history(
+                PROJECT_ROOT / "data" / "lerobot",
+                current_status=self._provider.status(),
+            )
 
 
 def load_hardware_config(path: str | Path) -> dict[str, Any]:
@@ -275,6 +286,15 @@ def build_handler(
                         HTTPStatus.SERVICE_UNAVAILABLE,
                     )
                 return
+            if route == "/api/collection-history":
+                try:
+                    self._send_json(runtime.collection_history())
+                except Exception as exc:  # noqa: BLE001 - history failures become HTTP status
+                    self._send_json(
+                        {"error": f"collection history unavailable: {type(exc).__name__}"},
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                    )
+                return
             if route in {"/api/spacemouse", "/api/cameras", "/api/recording", "/api/devices"}:
                 try:
                     status = runtime.status()
@@ -349,9 +369,7 @@ def build_handler(
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
-            cache_control = (
-                "no-cache" if target.name == "index.html" else "public, max-age=3600"
-            )
+            cache_control = "no-cache" if target.suffix in {".html", ".js", ".css", ".svg"} else "public, max-age=3600"
             self.send_header("Cache-Control", cache_control)
             self.end_headers()
             self.wfile.write(body)
@@ -482,6 +500,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="With --live, leave SpaceMouse to the active teleoperation process",
     )
+    parser.add_argument(
+        "--spacemouse-collection-launch",
+        action="store_true",
+        help="Start the wrist collection service after two physical Menu+Fit press cycles",
+    )
     return parser
 
 
@@ -491,6 +514,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit("--port must be between 0 and 65535")
     if args.camera_only and not args.live:
         raise SystemExit("--camera-only requires --live")
+    if args.spacemouse_collection_launch and (not args.live or args.camera_only):
+        raise SystemExit(
+            "--spacemouse-collection-launch requires --live and SpaceMouse monitoring"
+        )
     hardware = load_hardware_config(args.hardware_config)
     task_label = "等待采集任务"
     if args.strategy:
@@ -503,7 +530,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.live:
         from slai_mi.ui.live_provider import factory
 
-        provider: StatusProvider = factory(hardware, monitor_spacemouse=not args.camera_only)
+        provider: StatusProvider = factory(
+            hardware,
+            monitor_spacemouse=not args.camera_only,
+            collection_service=(
+                "slai-wrist-collection.service"
+                if args.spacemouse_collection_launch
+                else None
+            ),
+        )
     else:
         provider = OfflineStatusProvider(offline_status(hardware, task=task_label))
     runtime = DashboardRuntime(provider)

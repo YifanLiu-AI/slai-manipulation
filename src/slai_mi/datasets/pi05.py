@@ -27,6 +27,7 @@ SUPPORTED_CONTRACTS = {
     "robot_teleoperation.ur5_wuji.three_rgb_cartesian.v3",
     "robot_teleoperation.ur5_wuji.three_rgb_cartesian_rot6d_columns.v5",
     "robot_teleoperation.ur5_wrist.three_rgb_cartesian_rot6d_columns.v1",
+    "robot_teleoperation.ur5_wrist_gripper.three_rgb_cartesian_rot6d_columns.v1",
 }
 
 

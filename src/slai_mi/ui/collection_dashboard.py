@@ -16,6 +16,7 @@ from typing import Any, Self
 import numpy as np
 from PIL import Image
 
+from slai_mi.collection.history import CollectionEventJournal, build_collection_history
 from slai_mi.datasets.lerobot_v3.schema import RECORDED_BUTTON_NAMES
 from slai_mi.devices.spacemouse.buttons import BUTTON_NAME_BY_CODE
 from slai_mi.input_schema import compose_capture_vector, enabled_cameras, load_input_schema
@@ -30,7 +31,7 @@ from slai_mi.ui.webrtc_preview import H264PreviewPublisher
 class CollectionDashboardProvider:
     """Keep a bounded live snapshot without owning or commanding hardware."""
 
-    def __init__(self, hardware: dict[str, Any], task: str) -> None:
+    def __init__(self, hardware: dict[str, Any], task: str, *, task_id: str | None = None) -> None:
         self.schema = load_input_schema(hardware.get("input_schema"))
         image_height, image_width, _channels = self.schema["capture"]["image_shape"]
         cameras = enabled_cameras(self.schema)
@@ -41,6 +42,7 @@ class CollectionDashboardProvider:
             fps=int(self.schema["capture"]["fps"]),
         )
         self._status = dashboard_status_template(hardware, task=task)
+        self._task_id = task_id
         self._lock = threading.RLock()
         self._frames: dict[str, bytes] = {}
         self._events: deque[dict[str, Any]] = deque(maxlen=80)
@@ -52,6 +54,8 @@ class CollectionDashboardProvider:
         self._last_sync_ready = False
         self._temperature_level = "unknown"
         self._camera_counts = {str(item["role"]): 0 for item in cameras}
+        self._journal: CollectionEventJournal | None = None
+        self._dataset_root = Path(__file__).resolve().parents[3] / "data" / "lerobot"
 
     def start(self) -> None:
         self.preview.start()
@@ -78,16 +82,29 @@ class CollectionDashboardProvider:
             frame = self._frames.get(key)
         return bytes(frame) if frame is not None else None
 
-    def event(self, message: str, *, level: str = "info", code: str = "collection") -> None:
+    def event(
+        self,
+        message: str,
+        *,
+        level: str = "info",
+        code: str = "collection",
+        **details: Any,
+    ) -> None:
         item = {
             "time": datetime.now().astimezone().isoformat(timespec="seconds"),
             "level": level,
             "code": code,
             "message": message,
+            "task": self._status["task"],
+            "task_id": self._task_id,
+            "dataset_path": self._status.get("dataset_path"),
+            **details,
         }
         with self._lock:
             self._events.appendleft(item)
             self._status["events"] = list(self._events)
+            if self._journal is not None:
+                self._journal.append(item)
             self._touch()
 
     def set_phase(
@@ -108,9 +125,27 @@ class CollectionDashboardProvider:
             self._touch()
 
     def set_dataset_path(self, path: str | Path) -> None:
+        dataset_path = Path(path).expanduser().resolve()
         with self._lock:
-            self._status["dataset_path"] = str(path)
+            self._status["dataset_path"] = str(dataset_path)
+            self._dataset_root = dataset_path.parent
+            if self._journal is None:
+                self._journal = CollectionEventJournal(dataset_path)
+                buffered = []
+                for item in reversed(self._events):
+                    item["dataset_path"] = str(dataset_path)
+                    item["session_id"] = dataset_path.name
+                    buffered.append(item)
+                self._journal.append_many(buffered)
             self._touch()
+        self.event(
+            f"数据集已创建：{dataset_path.name}",
+            code="dataset",
+            session_id=dataset_path.name,
+        )
+
+    def collection_history(self) -> dict[str, Any]:
+        return build_collection_history(self._dataset_root, current_status=self.status())
 
     def start_episode(self, *, index: int, attempt: int) -> None:
         with self._lock:
@@ -123,16 +158,33 @@ class CollectionDashboardProvider:
             }
             self._recording_started_at = time.monotonic()
         self.set_phase("recording", "正在录制", can_record=False, recording=True)
-        self.event(f"Episode {index} 开始录制", code="episode_start")
+        self.event(
+            f"Episode {index} 开始录制",
+            code="episode_start",
+            episode=int(index),
+            attempt=int(attempt),
+        )
 
     def finish_episode(self, action: str, *, index: int) -> None:
         self._recording_started_at = None
         if action == "save":
             self.set_phase("ready", "已保存，可以继续", can_record=True, recording=False)
-            self.event(f"Episode {index} 保存成功", level="success", code="episode_save")
+            self.event(
+                f"Episode {index} 保存成功",
+                level="success",
+                code="episode_save",
+                episode=int(index),
+                attempt=int(self._status["episode"].get("attempt", 0)),
+            )
         else:
             self.set_phase("ready", "已丢弃，可以重录", can_record=True, recording=False)
-            self.event(f"Episode {index} 已丢弃", level="warning", code="episode_discard")
+            self.event(
+                f"Episode {index} 已丢弃",
+                level="warning",
+                code="episode_discard",
+                episode=int(index),
+                attempt=int(self._status["episode"].get("attempt", 0)),
+            )
 
     def record_frame(self, _frame: dict[str, object]) -> None:
         key = "valid_frames" if self._last_sync_ready else "rejected_frames"
@@ -369,16 +421,17 @@ class CollectionDashboard:
         hardware: dict[str, Any],
         task: str,
         *,
+        task_id: str | None = None,
         host: str = "127.0.0.1",
         port: int = 8765,
         open_browser: bool = True,
     ) -> None:
-        self.provider = CollectionDashboardProvider(hardware, task)
+        self.provider = CollectionDashboardProvider(hardware, task, task_id=task_id)
         self.runtime = DashboardRuntime(self.provider)
         self.server = ThreadingHTTPServer((host, port), build_handler(self.runtime))
         self.server.daemon_threads = True
         address, actual_port = self.server.server_address[:2]
-        browser_host = "127.0.0.1" if address in {"0.0.0.0", "::"} else str(address)
+        browser_host = "192.168.1.102" if address in {"0.0.0.0", "::"} else str(address)
         self.url = f"http://{browser_host}:{actual_port}"
         self.open_browser = open_browser
         self._thread: threading.Thread | None = None

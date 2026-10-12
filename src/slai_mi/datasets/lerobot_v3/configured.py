@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,7 @@ from slai_mi.rotation import rotation6d_columns_to_matrix
 
 CONTRACT_FILENAME = "robot_teleoperation_contract.json"
 WRIST_8DOF_CONTRACT_ID = "robot_teleoperation.ur5_wrist.three_rgb_cartesian_rot6d_columns.v1"
+GRIPPER_9DOF_CONTRACT_ID = "robot_teleoperation.ur5_wrist_gripper.three_rgb_cartesian_rot6d_columns.v1"
 BUTTON_NAMES = (
     "menu",
     "fit",
@@ -36,8 +38,11 @@ class ConfiguredDatasetContract:
         self.schema = schema
         self.capture = schema["capture"]
         self.cameras = enabled_cameras(schema)
-        self.contract_id = WRIST_8DOF_CONTRACT_ID
-        self.robot_type = "ur5_wrist_8dof"
+        has_gripper = any(
+            name.startswith("gripper.") for name in capture_vector_names(schema, "state")
+        )
+        self.contract_id = GRIPPER_9DOF_CONTRACT_ID if has_gripper else WRIST_8DOF_CONTRACT_ID
+        self.robot_type = "ur5_wrist_gripper_9dof" if has_gripper else "ur5_wrist_8dof"
         self.fps = int(self.capture["fps"])
         self.state_names = capture_vector_names(schema, "state")
         self.action_names = capture_vector_names(schema, "action")
@@ -242,8 +247,11 @@ class ConfiguredDatasetWriter:
 
     def finalize(self) -> None:
         self._dataset.finalize()
-        if int(self._dataset.meta.total_episodes) > 0:
-            self.validation_report = self.contract.validate_root(self._root)
+        if int(self._dataset.meta.total_episodes) == 0:
+            if self._root.exists():
+                shutil.rmtree(self._root)
+            return
+        self.validation_report = self.contract.validate_root(self._root)
 
 
 def create_configured_dataset(

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="light" />
     <title>SLAI-teleop</title>
-    <link rel="stylesheet" href="/styles.css?v=20260823-4" />
+    <link rel="stylesheet" href="/styles.css?v=20260823-7" />
   </head>
   <body>
     <main class="workspace">
@@ -35,14 +35,37 @@
           </div>
         </div>
 
-        <div class="glass-panel event-panel">
+        <div class="glass-panel event-panel" data-collection-active="false">
           <div class="panel-head">
-            <h2>System Events Log</h2>
+            <h2 id="event-panel-title">Dataset Overview</h2>
             <div class="system-state">
               <span class="system-indicator"><i></i><span id="system-label">Sys: Starting</span></span>
+              <span class="temperature-status" data-level="unknown" data-available="false">
+                <i aria-hidden="true"></i><span>WujiHand</span><strong>--</strong>
+              </span>
               <span class="record-indicator" data-state="starting"><i></i><span id="record-label">Preparing</span></span>
             </div>
           </div>
+          <section class="collection-summary" aria-label="Collection dataset summary">
+            <div class="collection-title-line">
+              <strong id="collection-task">DATASET</strong>
+              <span id="collection-dataset">正在读取 data/lerobot</span>
+            </div>
+            <div class="collection-metrics">
+              <span>本次保存<strong id="metric-saved">—</strong></span>
+              <span>本次尝试<strong id="metric-attempts">—</strong></span>
+              <span>本次丢弃<strong id="metric-discarded">—</strong></span>
+              <span>历史保存<strong id="metric-history-saved">—</strong></span>
+            </div>
+          </section>
+          <section class="dataset-history" aria-label="Dataset collection history">
+            <div class="history-columns" aria-hidden="true">
+              <span>时间</span><span>Task</span><span>尝试</span><span>保存</span><span>丢弃</span><span>数据集</span>
+            </div>
+            <div class="history-list">
+              <div class="history-row empty">正在读取 data/lerobot…</div>
+            </div>
+          </section>
           <div class="event-table" role="log" aria-live="polite">
             <div class="event-columns" aria-hidden="true">
               <span>Timestamp</span><span>Level</span><span>Message</span>
@@ -53,7 +76,6 @@
           </div>
           <div class="health-line">
             <span id="device-summary">UR5 -- · WujiHand -- · Wrist --</span>
-            <span class="temperature-status" data-level="unknown">Wuji Temp: <strong>--</strong></span>
           </div>
         </div>
       </section>
@@ -73,6 +95,6 @@
         </div>
       </figure>
     </template>
-    <script src="/app.js?v=20260823-7" defer></script>
+    <script src="/app.js?v=20260823-17" defer></script>
   </body>
 </html>

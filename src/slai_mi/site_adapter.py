@@ -35,6 +35,7 @@ from slai_mi.datasets.lerobot_v3.configured import (
 from slai_mi.datasets.lerobot_v3.schema import UR5_JOINT_NAMES, WUJI_JOINT_NAMES
 from slai_mi.datasets.lerobot_v3.writer import create_dataset
 from slai_mi.devices.cameras import CameraConfig, RealSenseCapture, validate_camera_set
+from slai_mi.devices.gripper import HiwonderGripper, SpaceMouseGripperControl
 from slai_mi.devices.spacemouse.buttons import RECORDED_BUTTONS, Button
 from slai_mi.devices.spacemouse.client import SpaceMouseProcess
 from slai_mi.devices.spacemouse.mapping import (
@@ -112,10 +113,14 @@ def _configured_pose(
     if kind == "task_start":
         schema_ref = str(payload.get("schema_ref") or "")
         expected_schema = str(task.get("state_schema") or "")
-        if expected_schema not in {"real_v1", "task1_v1"} or not schema_ref.endswith(
-            "#schemas.real_v1"
-        ):
-            raise ValueError(f"task pose {label} must use a supported 26 DoF hardware schema")
+        if expected_schema in {"real_v1", "task1_v1"}:
+            valid = schema_ref.endswith("#schemas.real_v1")
+        elif expected_schema == "task2_9dof":
+            valid = schema_ref.endswith("input_schemas/ur5e_wrist_gripper_9dof.yaml")
+        else:
+            valid = False
+        if not valid:
+            raise ValueError(f"task pose {label} does not match task schema {expected_schema!r}")
     return positions.copy()
 
 
@@ -141,13 +146,13 @@ def _hand_preset(task: dict[str, Any], name: str) -> np.ndarray:
 def _task_home_joints(task: dict[str, Any]) -> np.ndarray:
     reference = str(task.get("start_pose_ref") or "")
     if not reference:
-        raise ValueError("task.start_pose_ref is required for Button 4 home")
-    return _configured_pose(
-        task,
-        reference,
-        kind="task_start",
-        joint_names=(*UR5_JOINT_NAMES, *WUJI_JOINT_NAMES),
+        raise ValueError("task.start_pose_ref is required for T-key home")
+    joint_names = (
+        (*UR5_JOINT_NAMES, "wrist_pitch_joint", "wrist_yaw_joint", "gripper_joint")
+        if str(task.get("state_schema")) == "task2_9dof"
+        else (*UR5_JOINT_NAMES, *WUJI_JOINT_NAMES)
     )
+    return _configured_pose(task, reference, kind="task_start", joint_names=joint_names)
 
 
 class StationSession:
@@ -195,6 +200,8 @@ class StationSession:
         task_home_joints = _task_home_joints(task)
         self.ur5_home_joints = task_home_joints[:6].copy()
         self.wuji_home_joints = task_home_joints[6:].copy()
+        self.wrist_3_jog_speed = min(self.wrist_3_jog_speed, angular)
+        self.home_joint_speed = min(self.home_joint_speed, angular)
         self.open_hand_target = _hand_preset(task, "open")
         self.grasp_hand_target = _hand_preset(task, "grasp")
         presets = task.get("hand_presets")
@@ -366,6 +373,10 @@ class UR5OnlySession:
         self.max_rotation_rad = math.radians(float(motion["max_rotation_deg"]))
         self.spacemouse_deadzone = float(motion["deadzone"])
         self.ur5_home_joints = _task_home_joints(task)[:6].copy()
+        # Clamp auxiliary joint jogging to the same UR5 angular ceiling as
+        # the worker; exceeding it must not fail-closed the collection.
+        self.wrist_3_jog_speed = min(self.wrist_3_jog_speed, angular)
+        self.home_joint_speed = min(self.home_joint_speed, angular)
         self.ur5 = UR5DriverProcess(
             python=Path(ur5["driver_python"]),
             host=str(ur5["host"]),
@@ -464,8 +475,9 @@ class Wrist2WristTeleopLoop:
 class NativeWristTeleopLoop:
     """Run the same automatic-zero wrist adapter used by formal collection."""
 
-    def __init__(self, hardware: dict[str, Any]) -> None:
+    def __init__(self, hardware: dict[str, Any], mouse: Any) -> None:
         wrist = _section(hardware, "wrist_sensor")
+        self.mouse = mouse
         self.controller = WristMasterSlaveController(
             PROJECT_ROOT / str(wrist["config"]),
             teleop_port=str(wrist.get("teleop_port", "auto")),
@@ -474,9 +486,48 @@ class NativeWristTeleopLoop:
         )
 
     def run(self, stop_event: threading.Event) -> None:
+        previous: dict[int, bool] = {}
         with self.controller:
-            while not stop_event.wait(0.05):
+            while not stop_event.wait(0.01):
+                _motion, buttons = self.mouse.state()
+                action, previous = _wrist_gate_action(buttons, previous)
+                if action == "park":
+                    self.controller.request_park()
+                elif action == "resume":
+                    self.controller.request_resume()
                 self.controller.check()
+
+
+SPACE_MOUSE_WRIST_MAX_SPEED_DEG_S = 14.0
+SPACE_MOUSE_WRIST_RESPONSE_EXPONENT = 1.25
+SPACE_MOUSE_WRIST_RU_SIGN = -1.0
+
+
+def spacemouse_wrist_velocity(motion: np.ndarray) -> tuple[float, float]:
+    """Convert normalized SpaceMouse motion to a bounded FE/RU jog velocity."""
+    values = np.asarray(motion, dtype=np.float64).reshape(-1)
+    if values.shape != (6,) or not np.isfinite(values).all():
+        raise ValueError("SpaceMouse motion must contain six finite values")
+    response = np.sign(values[:2]) * np.abs(values[:2]) ** SPACE_MOUSE_WRIST_RESPONSE_EXPONENT
+    velocity = response * SPACE_MOUSE_WRIST_MAX_SPEED_DEG_S
+    # SpaceMouse +Y is opposite to the wrist RU/RY positive convention.
+    velocity[1] *= SPACE_MOUSE_WRIST_RU_SIGN
+    return float(velocity[0]), float(velocity[1])
+
+
+def _wrist_gate_action(
+    buttons: dict[int, bool], previous: dict[int, bool]
+) -> tuple[str | None, dict[int, bool]]:
+    tracked = (int(Button.T), int(Button.FIT), int(Button.MENU))
+    current = {button: bool(buttons.get(button, False)) for button in tracked}
+    rising = {button: current[button] and not previous.get(button, False) for button in tracked}
+    if current[int(Button.FIT)] and current[int(Button.MENU)]:
+        return None, current
+    if rising[int(Button.T)] or rising[int(Button.FIT)]:
+        return "park", current
+    if rising[int(Button.MENU)]:
+        return "resume", current
+    return None, current
 
 
 class RealPolicyBridge:
@@ -533,7 +584,7 @@ def _apply_legacy_ur5_command(
     home_requested: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     wrist_pressed = bool(buttons.get(int(Button.ONE), False) or buttons.get(int(Button.TWO), False))
-    home_pressed = bool(buttons.get(int(Button.HOME), False) or home_requested)
+    home_pressed = bool(buttons.get(int(Button.T), False) or home_requested)
     cap_active = bool(np.any(np.abs(motion) > 0.0))
     # Reading UR feedback is an IPC + RTDE round trip.  It is required for
     # workspace/home safety, but not for ordinary unconstrained SpaceMouse
@@ -897,7 +948,7 @@ class ControlledSpaceMouse:
         while not self._control_stop.is_set():
             started = time.monotonic()
             motion, buttons = self.mouse.state()
-            home_button = bool(buttons.get(int(Button.HOME), False))
+            home_button = bool(buttons.get(int(Button.T), False))
             wrist = getattr(self.session, "wrist", None)
             if home_button and not self._home_button_last and wrist is not None:
                 wrist.request_home()
@@ -927,7 +978,7 @@ class ControlledSpaceMouse:
             with self._latest_lock:
                 buttons = self.latest[1].copy()
             if self._home_requested.is_set():
-                buttons[int(Button.HOME)] = True
+                buttons[int(Button.T)] = True
             self._hand_controller.update(buttons, started)
             actual = np.asarray(self.session.read_wuji_positions(), dtype=np.float64)
             with self._latest_lock:
@@ -1026,8 +1077,13 @@ class ControlledUR5SpaceMouse:
         mouse: SpaceMouseProcess,
         session: UR5OnlySession,
         wrist: WristMasterSlaveController,
+        gripper: HiwonderGripper | None = None,
     ) -> None:
         self.mouse, self.session, self.wrist = mouse, session, wrist
+        self.gripper = gripper
+        self.gripper_control = (
+            SpaceMouseGripperControl(gripper) if gripper is not None else None
+        )
         self.latest = (np.zeros(6, dtype=np.float32), {})
         self.latest_twist = np.zeros(6, dtype=np.float64)
         self.latest_target_qd = np.zeros(6, dtype=np.float64)
@@ -1037,11 +1093,23 @@ class ControlledUR5SpaceMouse:
         self._first_command = threading.Event()
         self._home_requested = threading.Event()
         self._home_stable_since: float | None = None
+        self._wrist_buttons: dict[int, bool] = {}
         self._failure: BaseException | None = None
         self._thread: threading.Thread | None = None
 
     def __enter__(self):
         self.mouse.start()
+        try:
+            if self.gripper is not None:
+                self.gripper.open()
+            # WristMasterSlaveController starts parked after HOME. Resume it
+            # explicitly for TASK2 collection; otherwise the wrist remains still.
+            self.wrist.request_resume()
+        except BaseException:
+            if self.gripper is not None:
+                self.gripper.close()
+            self.mouse.stop()
+            raise
         return self
 
     def state(self):
@@ -1075,11 +1143,36 @@ class ControlledUR5SpaceMouse:
             started = time.monotonic()
             self.wrist.check()
             motion, buttons = self.mouse.state()
+            if self.gripper_control is not None and not self._home_requested.is_set():
+                # HOME owns the gripper target; ignore 3/4 button commands until
+                # UR5, wrist, and gripper have all reached their start state.
+                self.gripper_control.update(buttons)
+            wrist_action, self._wrist_buttons = _wrist_gate_action(
+                buttons, self._wrist_buttons
+            )
+            if wrist_action == "park":
+                self.wrist.request_park()
+            elif wrist_action == "resume":
+                self.wrist.request_resume()
+            ctrl_wrist = bool(buttons.get(int(Button.CTRL), False))
+            if ctrl_wrist:
+                # Ctrl turns the SpaceMouse cap into a two-axis wrist jog:
+                # cap X -> FE and cap Y -> RU. UR5 receives zero twist while
+                # the modifier is held, preventing simultaneous arm motion.
+                # Keep the wrist in a deliberately slower, damped jog mode.
+                # The SpaceMouse values are normalized to [-1, 1]; sending the
+                # old 20 deg/s full-scale command made small cap noise turn into
+                # visibly large FE/RU motion on the output loop.
+                self.wrist.set_spacemouse_velocity(*spacemouse_wrist_velocity(motion))
+                ur5_motion = np.zeros(6, dtype=np.float32)
+            else:
+                self.wrist.clear_spacemouse_velocity()
+                ur5_motion = motion
             with self._latest_lock:
                 self.latest = (motion.copy(), buttons.copy())
             start_pose, twist, target_qd, joints = _apply_legacy_ur5_command(
                 self.session,
-                motion,
+                ur5_motion,
                 buttons,
                 start_pose,
                 home_requested=self._home_requested.is_set(),
@@ -1099,13 +1192,24 @@ class ControlledUR5SpaceMouse:
         if fallback is not None:
             raise RuntimeError(fallback)
 
+    def read_gripper_state(self):
+        if self.gripper is None:
+            return None
+        return self.gripper.read_state()
+
     def request_home(self) -> None:
         self._home_stable_since = None
         self._home_requested.set()
+        self.wrist.clear_spacemouse_velocity()
         self.wrist.request_home()
+        if self.gripper is not None:
+            # TASK2 gripper HOME is binary state 0: fully open.
+            self.gripper.command(0)
 
     def clear_home(self) -> None:
         self._home_requested.clear()
+        # HOME leaves the wrist parked; resume only after coordinated home.
+        self.wrist.request_resume()
 
     def home_status(self) -> dict[str, object]:
         with self._latest_lock:
@@ -1115,7 +1219,26 @@ class ControlledUR5SpaceMouse:
             return {"at_home": False, "detail": "waiting for UR5 telemetry"}
         ur5_error = float(np.max(np.abs(joints - self.session.ur5_home_joints)))
         wrist_status = self.wrist.home_status()
-        within = ur5_error <= 0.010 and bool(wrist_status["at_home"])
+        gripper_status: dict[str, object] = {
+            "at_home": True,
+            "detail": "gripper disabled",
+        }
+        if self.gripper is not None:
+            state = self.gripper.read_state()
+            gripper_open = bool(state.actual_q[0] == 0.0 and state.target_q[0] == 0.0)
+            gripper_status = {
+                "at_home": gripper_open,
+                "detail": (
+                    f"gripper position={state.position} target={state.target_position}"
+                ),
+                "position": int(state.position),
+                "target_position": int(state.target_position),
+            }
+        within = (
+            ur5_error <= 0.010
+            and bool(wrist_status["at_home"])
+            and bool(gripper_status["at_home"])
+        )
         now = time.monotonic()
         if not within:
             self._home_stable_since = None
@@ -1126,9 +1249,13 @@ class ControlledUR5SpaceMouse:
         )
         return {
             "at_home": at_home,
-            "detail": f"UR5 error {ur5_error:.3f} rad; {wrist_status['detail']}",
+            "detail": (
+                f"UR5 error {ur5_error:.3f} rad; {wrist_status['detail']}; "
+                f"{gripper_status['detail']}"
+            ),
             "ur5_error_rad": ur5_error,
             "wrist": wrist_status,
+            "gripper": gripper_status,
         }
 
     def __exit__(self, *_args: object) -> None:
@@ -1139,7 +1266,11 @@ class ControlledUR5SpaceMouse:
         try:
             self.session.stop_ur5_motion()
         finally:
-            self.mouse.stop()
+            try:
+                if self.gripper is not None:
+                    self.gripper.close()
+            finally:
+                self.mouse.stop()
         context_failed = bool(_args and _args[0] is not None)
         if alive and not context_failed:
             raise RuntimeError("collection UR5 control thread did not stop")
@@ -1211,6 +1342,8 @@ class StationSynchronizer:
         wrist_source = self.sources.get("wrist")
         wrist_state = wrist_source.state() if wrist_source is not None else None
         controlled_mouse = self.sources["spacemouse"]
+        read_gripper = getattr(controlled_mouse, "read_gripper_state", None)
+        gripper_state = read_gripper() if callable(read_gripper) else None
         motion, buttons = controlled_mouse.latest
         self.sequence += 1
         ur = SimpleNamespace(
@@ -1289,6 +1422,13 @@ class StationSynchronizer:
                 wrist_timestamp,
                 wrist_sequence,
             )
+        if gripper_state is not None:
+            channels["gripper"] = sample(
+                gripper_state,
+                gripper_state.host_timestamp_s,
+                gripper_state.host_timestamp_s,
+                gripper_state.sequence,
+            )
         return SynchronizedInputs(cameras=cameras, channels=channels)
 
 
@@ -1346,7 +1486,7 @@ def make_teleop(hardware: dict[str, Any], task: dict[str, Any]) -> TeleopDepende
             preflight=_wrist_teleop_preflight,
             runtime_factories={
                 "ur5-teleop": lambda _config, mouse, _stop: UR5TeleopLoop(session, mouse),
-                "wrist-teleop": lambda config, _mouse, _stop: NativeWristTeleopLoop(config),
+                "wrist-teleop": lambda config, mouse, _stop: NativeWristTeleopLoop(config, mouse),
             },
             required_devices=("ur5", "wrist_sensor", "spacemouse"),
         )
@@ -1433,13 +1573,22 @@ def make_collection(
     if wrist_enabled and not wuji_enabled:
         session = UR5OnlySession(hardware, task)
         wrist_config = _section(hardware, "wrist_sensor")
+        gripper_config = hardware.get("gripper", {})
+        schema = load_input_schema(hardware.get("input_schema"))
+        state_channels = {
+            str(item["name"]) for item in schema["synchronization"]["state_channels"]
+        }
+        gripper_enabled = bool(
+            "gripper" in state_channels
+            and isinstance(gripper_config, dict)
+            and gripper_config.get("enabled", False)
+        )
         wrist = WristMasterSlaveController(
             PROJECT_ROOT / str(wrist_config["config"]),
             teleop_port=str(wrist_config.get("teleop_port", "auto")),
             openrb_port=str(wrist_config.get("openrb_port", "auto")),
             baud=int(wrist_config.get("baud", 115200)),
         )
-        schema = load_input_schema(hardware.get("input_schema"))
         contract = ConfiguredDatasetContract(schema)
         assembler = partial(
             assemble_configured_frame,
@@ -1466,11 +1615,29 @@ def make_collection(
                 "ur5": lambda _config: session.lease(arm=False),
                 "wrist": lambda _config: wrist,
                 "spacemouse": lambda config: ControlledUR5SpaceMouse(
-                    _mouse(config, session), session, wrist
+                    _mouse(config, session),
+                    session,
+                    wrist,
+                    HiwonderGripper(
+                        str(gripper_config["port"]),
+                        servo_id=int(gripper_config.get("servo_id", 1)),
+                        baud=int(gripper_config.get("baud", 115200)),
+                        move_time_ms=int(gripper_config.get("move_time_ms", 1000)),
+                        max_temperature_c=int(gripper_config.get("max_temperature_c", 60)),
+                        binary_threshold=int(gripper_config.get("binary_threshold", 500)),
+                    )
+                    if gripper_enabled
+                    else None,
                 ),
                 "cameras": _cameras,
             },
-            required_devices=("ur5", "wrist_sensor", "spacemouse", "cameras"),
+            required_devices=(
+                "ur5",
+                "wrist_sensor",
+                "spacemouse",
+                "cameras",
+                *(("gripper",) if gripper_enabled else ()),
+            ),
         )
     session = StationSession(hardware, task)
     return CollectionDependencies(

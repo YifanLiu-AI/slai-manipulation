@@ -11,7 +11,7 @@ import sys
 import threading
 import time
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Self
 
@@ -94,6 +94,10 @@ class WristMasterSlaveController:
         self._stop = threading.Event()
         self._home_requested = threading.Event()
         self._home_running = threading.Event()
+        self._park_requested = threading.Event()
+        self._park_running = threading.Event()
+        self._resume_requested = threading.Event()
+        self._parked = False
         self._thread: threading.Thread | None = None
         self._failure: BaseException | None = None
         self._teleop: Any | None = None
@@ -102,6 +106,12 @@ class WristMasterSlaveController:
         self._config: Any | None = None
         self._latest: WristTeleopState | None = None
         self._sequence = 0
+        self._baseline: tuple[float, float] | None = None
+        self._pending_master_line: Any | None = None
+        self._spacemouse_velocity = np.zeros(2, dtype=np.float64)  # FE, RU deg/s
+        self._spacemouse_override = False
+        self._spacemouse_target = np.zeros(2, dtype=np.float64)
+        self._spacemouse_last_update_s = 0.0
 
     def __enter__(self) -> Self:
         self.start()
@@ -138,8 +148,9 @@ class WristMasterSlaveController:
                 {"SET_PERIOD"},
                 timeout_s=2.0,
             )
-            initial = controller.prepare(auto_home_zero=True, force_home_zero=False)
-            self._initialize_master_stream(initial)
+            initial = self._prepare_dynamic_home(controller)
+            self._store_state(initial)
+            self._parked = True
         except BaseException:
             self._close_serials(return_zero=False)
             raise
@@ -149,11 +160,87 @@ class WristMasterSlaveController:
         )
         self._thread.start()
 
+    def _prepare_dynamic_home(self, controller: Any) -> Any:
+        """HOME the motors, then establish this assembly's encoder baseline.
+
+        The vendor YAML remains immutable.  The current assembly's absolute
+        encoder readings become the runtime output-zero reference, and a copy
+        is written only to this project's diagnostic data directory.
+        """
+        # Lightweight test doubles and non-OpenRB adapters retain their
+        # original lifecycle; the real OpenRB controller exposes this client
+        # boundary and uses the dynamic assembly baseline below.
+        if not all(
+            callable(getattr(controller, name, None))
+            for name in ("inspect", "_wait_motion_idle")
+        ) or not hasattr(controller, "client"):
+            return controller.prepare(auto_home_zero=True, force_home_zero=False)
+        response = controller.inspect()
+        if response.fields.get("active") == "1" or response.fields.get("vmode") == "1":
+            stopped = controller.client.set_output_closed_loop_enable(False)
+            if not stopped.ok:
+                raise RuntimeError(stopped.raw_lines[-1])
+        home = controller.client.home_all()
+        if not home.ok:
+            raise RuntimeError(home.raw_lines[-1])
+        controller._wait_motion_idle()
+        samples = []
+        for _ in range(5):
+            fields = controller.client.read_wrist_state(retries=6, retry_delay_s=0.05).fields
+            samples.append((int(fields["enc0_deg"]) / 100.0, int(fields["enc1_deg"]) / 100.0))
+            time.sleep(0.04)
+        enc0 = float(np.mean([item[0] for item in samples]))
+        enc1 = float(np.mean([item[1] for item in samples]))
+        runtime_zero = replace(
+            controller.config.output_zero,
+            enc0_abs_deg=enc0,
+            enc1_abs_deg=enc1,
+        )
+        controller.config = replace(controller.config, output_zero=runtime_zero)
+        zero = controller.client.set_output_zero_absolute_cdeg(round(enc0 * 100), round(enc1 * 100))
+        if not zero.ok:
+            raise RuntimeError(zero.raw_lines[-1])
+        self._baseline = (enc0, enc1)
+        baseline_path = PROJECT_ROOT / "data" / "wrist_home_baseline.yaml"
+        baseline_path.parent.mkdir(parents=True, exist_ok=True)
+        baseline_path.write_text(
+            f"schema: slai_wrist_home_baseline_v1\nenc0_abs_deg: {enc0:.2f}\nenc1_abs_deg: {enc1:.2f}\n",
+            encoding="utf-8",
+        )
+        return controller.prepare(auto_home_zero=False, force_home_zero=False)
+
     def _initialize_master_stream(self, output_state: Any) -> None:
         assert self._teleop is not None and self._controller is not None
-        started = self._teleop.command("START", {"START"}, timeout_s=2.0)
-        if not started.ok or started.fields.get("zero_valid") != "1":
-            raise RuntimeError("ESP32 wrist master failed to establish zero")
+        # START is idempotent from the adapter's perspective. The ESP32 can
+        # already be streaming TELE after a park/resume transition; in that
+        # case command() never sees a separate START acknowledgement because
+        # the serial stream is continuously occupied by TELE frames. Accept a
+        # fresh TELE frame as proof that the master stream is alive instead of
+        # failing the whole collection on a protocol race.
+        started = None
+        try:
+            started = self._teleop.command("START", {"START"}, timeout_s=0.5)
+        except TimeoutError:
+            # Fall through to the live TELE stream. Some firmware revisions
+            # acknowledge START only by continuing their already-live stream.
+            self._teleop.write_command("START")
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline:
+                line = self._teleop.read_line(0.1)
+                if line is None:
+                    continue
+                parsed = self._parse_line(line)
+                if parsed is None or not parsed.ok:
+                    continue
+                if parsed.command in {"START", "TELE"}:
+                    started = parsed
+                    if parsed.command == "TELE":
+                        self._pending_master_line = parsed
+                    break
+        if started is None:
+            raise TimeoutError("Timed out waiting for ESP32 START/TELE acknowledgement")
+        if "enc0_deg" not in started.fields or "enc1_deg" not in started.fields:
+            raise RuntimeError("ESP32 wrist master acknowledgement has no encoder fields")
         enc0 = self._field_float_deg(started.fields, "enc0_deg")
         enc1 = self._field_float_deg(started.fields, "enc1_deg")
         self._enc0 = self._AngleUnwrapper()
@@ -192,19 +279,86 @@ class WristMasterSlaveController:
         assert self._teleop is not None and self._controller is not None
         command_period = 1.0 / float(self._config.stream.command_hz)
         state_period = 1.0 / float(self._config.stream.state_hz)
+        last_external = False
         while not self._stop.is_set():
+            if self._park_requested.is_set():
+                self._park_running.set()
+                self._teleop.command("STOP", {"STOP"}, timeout_s=2.0)
+                output = self._prepare_dynamic_home(self._controller)
+                self._store_state(output)
+                self._parked = True
+                self._park_requested.clear()
+                self._park_running.clear()
+                continue
+            if self._resume_requested.is_set():
+                if self._parked:
+                    self._initialize_master_stream(self._controller.read_state())
+                    self._parked = False
+                self._resume_requested.clear()
+                continue
             if self._home_requested.is_set():
                 self._home_running.set()
                 self._teleop.command("STOP", {"STOP"}, timeout_s=2.0)
-                output = self._controller.prepare(auto_home_zero=True, force_home_zero=False)
-                self._initialize_master_stream(output)
+                output = self._prepare_dynamic_home(self._controller)
+                self._store_state(output)
+                self._parked = True
                 self._home_requested.clear()
                 self._home_running.clear()
                 continue
-            line = self._teleop.read_line(0.02)
-            if line is None:
+            if self._parked:
+                self._stop.wait(0.01)
                 continue
-            parsed = self._parse_line(line)
+            with self._lock:
+                external_velocity = self._spacemouse_velocity.copy()
+                external_active = self._spacemouse_override
+            if external_active:
+                now = time.monotonic()
+                if now < self._next_command_s:
+                    self._stop.wait(min(self._next_command_s - now, 0.005))
+                    continue
+                # Never turn a scheduling/serial stall into one large wrist
+                # position step. The next iteration will continue from the
+                # command target at the normal jog rate.
+                dt = float(np.clip(now - self._last_command_s, 0.001, 0.05))
+                self._last_command_s = now
+                # Integrate from our own command target, not the feedback target.
+                # Reading target_* here adds serial latency to the integrator and
+                # can amplify lag into overshoot/oscillation.
+                self._spacemouse_target += external_velocity * dt
+                assert self._controller.bounds is not None
+                self._spacemouse_target[0] = np.clip(
+                    self._spacemouse_target[0],
+                    self._controller.bounds.fe_min_cdeg / 100.0,
+                    self._controller.bounds.fe_max_cdeg / 100.0,
+                )
+                self._spacemouse_target[1] = np.clip(
+                    self._spacemouse_target[1],
+                    self._controller.bounds.ru_min_cdeg / 100.0,
+                    self._controller.bounds.ru_max_cdeg / 100.0,
+                )
+                self._controller.stream_target_deg(*self._spacemouse_target)
+                # Do not perform a blocking serial state read on every command.
+                # The old read-after-write made the 50 Hz jog loop wait for a
+                # second round trip and showed up as visible SpaceMouse lag.
+                if now >= self._next_state_s:
+                    self._store_state(self._controller.read_state())
+                    self._next_state_s = now + state_period
+                self._next_command_s = now + command_period
+                last_external = True
+                continue
+            if last_external:
+                # Re-zero the master at the current output so releasing Ctrl
+                # cannot snap the wrist to the master's old pose.
+                self._initialize_master_stream(self._controller.read_state())
+                last_external = False
+            if self._pending_master_line is not None:
+                parsed = self._pending_master_line
+                self._pending_master_line = None
+            else:
+                line = self._teleop.read_line(0.02)
+                if line is None:
+                    continue
+                parsed = self._parse_line(line)
             if parsed is None or not parsed.ok or parsed.command != "TELE":
                 continue
             now = time.monotonic()
@@ -255,13 +409,55 @@ class WristMasterSlaveController:
         if self._thread is not None and not self._thread.is_alive() and not self._stop.is_set():
             raise RuntimeError("wrist teleoperation stopped unexpectedly")
 
+    def set_spacemouse_velocity(self, fe_deg_s: float, ru_deg_s: float) -> None:
+        """Override wrist motion from the SpaceMouse while Ctrl is held."""
+        self.check()
+        with self._lock:
+            velocity = np.asarray((fe_deg_s, ru_deg_s), dtype=np.float64)
+            if not np.isfinite(velocity).all():
+                raise ValueError("SpaceMouse wrist velocity must be finite")
+            self._spacemouse_velocity[:] = np.clip(
+                velocity,
+                -14.0,
+                14.0,
+            )
+            if not self._spacemouse_override:
+                state = self._controller.read_state()
+                self._spacemouse_target[:] = (
+                    float(state.target_fe_deg), float(state.target_ru_deg)
+                )
+            self._spacemouse_override = True
+
+    def clear_spacemouse_velocity(self) -> None:
+        """Return control to the ESP32 master without a target jump."""
+        with self._lock:
+            self._spacemouse_velocity[:] = 0.0
+            self._spacemouse_override = False
+            self._spacemouse_target.fill(0.0)
+
     def request_home(self) -> None:
         self.check()
+        self.clear_spacemouse_velocity()
         self._home_requested.set()
+
+    def request_park(self) -> None:
+        """Return FE/RU to zero and ignore master motion until resumed."""
+        self.check()
+        self._park_requested.set()
+
+    def request_resume(self) -> None:
+        """Use the current master pose as zero and resume wrist following."""
+        self.check()
+        self._resume_requested.set()
 
     def home_status(self) -> dict[str, object]:
         self.check()
-        if self._home_requested.is_set() or self._home_running.is_set():
+        if (
+            self._home_requested.is_set()
+            or self._home_running.is_set()
+            or self._park_requested.is_set()
+            or self._park_running.is_set()
+        ):
             return {"at_home": False, "detail": "wrist returning to zero"}
         state = self.state()
         error = float(np.max(np.abs(state.actual_q)))

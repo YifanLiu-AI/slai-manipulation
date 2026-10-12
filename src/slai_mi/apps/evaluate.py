@@ -60,6 +60,7 @@ def _dataset(args: argparse.Namespace) -> dict[str, Any]:
     manifest_path = args.root / "meta" / "robot_teleoperation_contract.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     from slai_mi.datasets.lerobot_v3.configured import (
+        GRIPPER_9DOF_CONTRACT_ID,
         WRIST_8DOF_CONTRACT_ID,
         ConfiguredDatasetContract,
     )
@@ -68,6 +69,13 @@ def _dataset(args: argparse.Namespace) -> dict[str, Any]:
         from slai_mi.input_schema import load_input_schema
 
         schema_path = args.schema or Path("configs/input_schemas/ur5e_wrist_8dof.yaml")
+        return ConfiguredDatasetContract(load_input_schema(schema_path)).validate_root(args.root)
+    if manifest.get("contract_id") == GRIPPER_9DOF_CONTRACT_ID:
+        from slai_mi.input_schema import load_input_schema
+
+        schema_path = args.schema or Path(
+            "configs/input_schemas/ur5e_wrist_gripper_9dof.yaml"
+        )
         return ConfiguredDatasetContract(load_input_schema(schema_path)).validate_root(args.root)
     from slai_mi.datasets.lerobot_v3 import validate_dataset_root
 
