@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from ctypes import CDLL, POINTER, Structure, Union, c_int, c_uint, c_void_p, pointer
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import ClassVar
 
 SPNAV_EVENT_MOTION = 1
@@ -45,27 +46,36 @@ class _Event(Union):
     _fields_: ClassVar = [("type", c_int), ("motion", _MotionEvent), ("button", _ButtonEvent)]
 
 
-_LIB = CDLL("libspnav.so")
-_LIB.spnav_open.argtypes = []
-_LIB.spnav_open.restype = c_int
-_LIB.spnav_close.argtypes = []
-_LIB.spnav_close.restype = None
-_LIB.spnav_poll_event.argtypes = [POINTER(_Event)]
-_LIB.spnav_poll_event.restype = c_int
+@lru_cache(maxsize=1)
+def _load_library():
+    """Load the optional native backend only when it is used."""
+    try:
+        lib = CDLL("libspnav.so")
+    except OSError as exc:
+        raise RuntimeError(
+            "libspnav is unavailable; install libspnav or select the evdev backend"
+        ) from exc
+    lib.spnav_open.argtypes = []
+    lib.spnav_open.restype = c_int
+    lib.spnav_close.argtypes = []
+    lib.spnav_close.restype = None
+    lib.spnav_poll_event.argtypes = [POINTER(_Event)]
+    lib.spnav_poll_event.restype = c_int
+    return lib
 
 
 def open_connection() -> None:
-    if _LIB.spnav_open() == -1:
+    if _load_library().spnav_open() == -1:
         raise RuntimeError("failed to connect to spacenavd")
 
 
 def close_connection() -> None:
-    _LIB.spnav_close()
+    _load_library().spnav_close()
 
 
 def poll_event() -> SpnavMotionEvent | SpnavButtonEvent | None:
     event = _Event()
-    if _LIB.spnav_poll_event(pointer(event)) == 0:
+    if _load_library().spnav_poll_event(pointer(event)) == 0:
         return None
     if event.type == SPNAV_EVENT_MOTION:
         motion = event.motion
