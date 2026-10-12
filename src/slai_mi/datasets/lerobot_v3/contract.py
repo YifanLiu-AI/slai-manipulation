@@ -9,14 +9,21 @@ from typing import Any
 
 import numpy as np
 
+from slai_mi.input_schema import transformed_vector_dimension, vector_indices
+from slai_mi.rotation import rotation6d_columns_to_matrix
+
 from .schema import (
+    ACTION_DIM,
+    CAMERA_SCHEMAS,
     CAMERA_SKEW_MS,
-    D405_RGB,
-    D435_PRIMARY_RGB,
-    D435_SECONDARY_RGB,
     DEVICE_TIMESTAMPS_S,
     FPS,
     HOST_RECEIVE_TIMESTAMPS_S,
+    IMAGE_CHANNELS,
+    IMAGE_HEIGHT,
+    IMAGE_WIDTH,
+    INPUT_SCHEMA,
+    OBSERVATION_TCP_POSE,
     SOURCE_AGE_MS,
     SOURCE_DROPS,
     SOURCE_RESTARTS,
@@ -26,10 +33,10 @@ from .schema import (
     lerobot_features,
 )
 
-CONTRACT_ID = "robot_teleoperation.ur5_wuji.three_rgb_cartesian.v3"
+CONTRACT_ID = "robot_teleoperation.ur5_wuji.three_rgb_cartesian_rot6d_columns.v5"
 CONTRACT_FILENAME = "robot_teleoperation_contract.json"
 LEROBOT_CODEBASE_VERSION = "v3.0"
-IMAGE_KEYS = (D435_PRIMARY_RGB, D405_RGB, D435_SECONDARY_RGB)
+IMAGE_KEYS = tuple(str(camera["dataset_key"]) for camera in CAMERA_SCHEMAS)
 NONNEGATIVE_KEYS = (
     CAMERA_SKEW_MS,
     SOURCE_AGE_MS,
@@ -68,21 +75,40 @@ def schema_sha256() -> str:
 
 
 def contract_manifest() -> dict[str, Any]:
+    features = lerobot_features()
+    policy_state_dim = sum(
+        len(
+            vector_indices(
+                source,
+                transformed_vector_dimension(
+                    source,
+                    int(features[str(source["key"])]["shape"][0]),
+                    f"pi05.state.sources[{index}]",
+                ),
+                f"pi05.state.sources[{index}]",
+            )
+        )
+        for index, source in enumerate(INPUT_SCHEMA["pi05"]["state"]["sources"])
+    )
     return {
         "contract_id": CONTRACT_ID,
         "schema_sha256": schema_sha256(),
         "lerobot_codebase_version": LEROBOT_CODEBASE_VERSION,
         "fps": FPS,
         "capture": {
-            "images": "three independent hardware color/rgb8 streams at uint8[480,640,3]",
-            "state": "actual_ur5_q[6] + actual_wuji_q[20]",
-            "tcp_pose": "actual_tcp_xyz_rotvec_in_ur_base_frame[6]",
-            "action": "rtde_target_tcp_twist[6] + wuji_target_q[20]",
+            "images": {
+                "keys": list(IMAGE_KEYS),
+                "shape": [IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_CHANNELS],
+            },
+            "state": list(INPUT_SCHEMA["capture"]["state"]["components"]),
+            "tcp_pose": dict(INPUT_SCHEMA["capture"]["tcp_pose"]),
+            "action": list(INPUT_SCHEMA["capture"]["action"]["components"]),
         },
         "pi05_training_view": {
-            "state": "tcp_pose[6] + capture_state[26]",
-            "physical_action_dim": 26,
-            "model_action_dim": 32,
+            "state_dim": policy_state_dim,
+            "physical_action_dim": ACTION_DIM,
+            "model_state_dim": int(INPUT_SCHEMA["pi05"]["state"]["model_pad_to"]),
+            "model_action_dim": int(INPUT_SCHEMA["pi05"]["action"]["model_pad_to"]),
             "padding": "OpenPI model transform only; never stored in the dataset",
         },
     }
@@ -126,6 +152,7 @@ def validate_frame(frame: dict[str, Any]) -> None:
     for key in BINARY_KEYS:
         if not np.isin(np.asarray(frame[key]), (0, 1)).all():
             raise ValueError(f"{key} must contain only 0 or 1")
+    rotation6d_columns_to_matrix(np.asarray(frame[OBSERVATION_TCP_POSE])[3:])
 
 
 def _validate_manifest(root: Path) -> None:
@@ -169,26 +196,10 @@ def _validate_metadata(root: Path) -> dict[str, Any]:
                     f"{key}.{attribute} is {stored.get(attribute)!r}, "
                     f"expected {feature[attribute]!r}"
                 )
-    expected_video_info = {
-        "is_depth_map": False,
-        "video.height": 480,
-        "video.width": 640,
-        "video.codec": "h264",
-        "video.pix_fmt": "yuv420p",
-        "video.fps": FPS,
-        "video.channels": 3,
-        "video.g": FPS,
-        "video.crf": 18,
-        "video.preset": "medium",
-    }
     for key in IMAGE_KEYS:
         stored_info = actual[key].get("info", {})
-        for attribute, value in expected_video_info.items():
-            if stored_info.get(attribute) != value:
-                raise ValueError(
-                    f"{key}.info.{attribute} is {stored_info.get(attribute)!r}, "
-                    f"expected {value!r}"
-                )
+        if stored_info.get("is_depth_map") is not False:
+            raise ValueError(f"{key}.info.is_depth_map must be false")
     if info.get("robot_type") != "ur5_wuji_hand1":
         raise ValueError(
             f"robot_type is {info.get('robot_type')!r}, expected 'ur5_wuji_hand1'"

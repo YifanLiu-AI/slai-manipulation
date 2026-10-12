@@ -1,29 +1,44 @@
 schema_version: 1
 setup_id: default
-configured: false
+configured: true
+input_schema: configs/input_schema.yaml
 
 # Device identities belong in a local, git-ignored override file or environment.
 ur5:
-  enabled: false
-  host: null
+  enabled: true
+  host: 192.168.1.106
+  driver_python: /home/user/miniconda3/envs/robot_teaching_isaaclab/bin/python
+  driver_watchdog_s: 0.25
+  # Hard ceilings; per-task operating speeds come from the control profile.
+  max_linear_m_s: 0.25
+  max_angular_rad_s: 0.60
 
 wujihand:
-  enabled: false
-  usb_serial: null
-  product_serial: null
+  enabled: true
+  usb_serial: '387E36623533'
+  device_path: /dev/serial/by-id/usb-WUJITECH_WUJIHAND_387E36623533-if00
+  product_serial: 'LQSQJR.260430.002'
+  driver_python: /home/user/venvs/robot-teleoperation/wuji-sdk/bin/python
+  retarget_python: /home/user/miniconda3/envs/wuji_retargeting_camera/bin/python
+  driver_watchdog_s: 0.5
+  max_temperature_c: 80.0
+  thermal_warning_temperature_c: 70.0
+  thermal_critical_temperature_c: 75.0
+  max_velocity_rad_s: 3.0
+  retarget_config: third_party/wuji-retargeting/example/config/adaptive_analytical_video.yaml
 
 spacemouse:
-  enabled: false
+  enabled: true
 
 cameras:
-  enabled: false
+  enabled: true
   devices:
     - role: primary
-      serial: null
+      serial: '254522076307'
     - role: secondary
-      serial: null
+      serial: '254522075176'
     - role: wrist
-      serial: null
+      serial: '260322279394'
 
 stereo_camera:
   enabled: false
@@ -39,3 +54,5 @@ iphone:
 
 wrist_sensor:
   enabled: false
+
+adapter_plugin: slai_mi.site_adapter:make_dependencies

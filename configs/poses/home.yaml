@@ -3,7 +3,7 @@ name: home
 kind: device_home
 configured: false
 units: rad
-schema_ref: ../dataset.yaml#schemas.simulation_v1
+schema_ref: ../dataset.yaml#schemas.real_v1
 joint_names:
   - shoulder_pan_joint
   - shoulder_lift_joint
@@ -11,8 +11,6 @@ joint_names:
   - wrist_1_joint
   - wrist_2_joint
   - wrist_3_joint
-  - wrist_pitch_joint
-  - wrist_yaw_joint
   - right_finger1_joint1
   - right_finger1_joint2
   - right_finger1_joint3
@@ -33,7 +31,7 @@ joint_names:
   - right_finger5_joint2
   - right_finger5_joint3
   - right_finger5_joint4
-joint_positions: [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null]
+joint_positions: [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null]
 provenance:
   source: not_recorded
-  note: Device-level 28-DoF home must be commissioned and safety-reviewed.
+  note: Generic real-device home remains unset; production uses each task's commissioned 26-DoF start pose.

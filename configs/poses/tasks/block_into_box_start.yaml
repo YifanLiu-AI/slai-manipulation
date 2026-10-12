@@ -1,7 +1,7 @@
 schema_version: 1
 name: block_into_box_start
 kind: task_start
-configured: false
+configured: true
 units: rad
 schema_ref: ../../dataset.yaml#schemas.real_v1
 joint_names: [shoulder_pan_joint, shoulder_lift_joint, elbow_joint, wrist_1_joint, wrist_2_joint, wrist_3_joint, right_finger1_joint1, right_finger1_joint2, right_finger1_joint3, right_finger1_joint4, right_finger2_joint1, right_finger2_joint2, right_finger2_joint3, right_finger2_joint4, right_finger3_joint1, right_finger3_joint2, right_finger3_joint3, right_finger3_joint4, right_finger4_joint1, right_finger4_joint2, right_finger4_joint3, right_finger4_joint4, right_finger5_joint1, right_finger5_joint2, right_finger5_joint3, right_finger5_joint4]
@@ -10,4 +10,4 @@ provenance:
   source: legacy:task/block_into_box/config.yaml
   captured_at: "2026-07-25T00:12:45+08:00"
   record_type: historical_backfill_from_verified_zero_pose
-  safety_note: Historical measurement; verify on the current robot before setting configured true.
+  safety_note: Commissioned legacy task zero; canonical real_v1 order verified against the authoritative task config.

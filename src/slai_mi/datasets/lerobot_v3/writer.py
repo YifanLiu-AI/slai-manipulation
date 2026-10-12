@@ -36,20 +36,12 @@ class ContractDatasetWriter:
 
 
 def create_dataset(*, repo_id: str, root: Path, fps: int = FPS):
-    from lerobot.configs.video import RGBEncoderConfig
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
     if root.exists():
         raise FileExistsError(f"refusing to overwrite dataset root: {root}")
     if fps != FPS:
         raise ValueError(f"canonical VLA v3 capture must use {FPS} Hz, got {fps}")
-    rgb_encoder = RGBEncoderConfig(
-        vcodec="h264",
-        pix_fmt="yuv420p",
-        g=fps,
-        crf=18,
-        preset="medium",
-    )
     dataset = LeRobotDataset.create(
         repo_id=repo_id,
         root=root,
@@ -59,7 +51,7 @@ def create_dataset(*, repo_id: str, root: Path, fps: int = FPS):
         use_videos=True,
         tolerance_s=1e-4,
         batch_encoding_size=1,
-        rgb_encoder=rgb_encoder,
+        vcodec="h264",
         streaming_encoding=True,
         encoder_queue_maxsize=90,
         encoder_threads=2,

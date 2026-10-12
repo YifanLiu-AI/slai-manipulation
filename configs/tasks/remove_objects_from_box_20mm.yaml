@@ -1,0 +1,15 @@
+schema_version: 1
+task:
+  id: remove_objects_from_box-20mm
+  instruction: Remove the objects from the box.
+dataset_ref: ../dataset.yaml
+state_schema: real_v1
+control_profile_ref: ../controls/spacemouse_extended.yaml
+# The legacy -20mm task used this exact commissioned historical 26-DoF vector.
+# It remains disabled until its current-station home validation is recorded.
+start_pose_ref: ../poses/tasks/remove_objects_from_box_start.yaml
+hand_presets:
+  open: ../poses/tasks/remove_objects_from_box_open.yaml
+  grasp: ../poses/tasks/remove_objects_from_box_grasp.yaml
+  auxiliary_open: ../poses/tasks/remove_objects_from_box_aux_open.yaml
+  auxiliary_grasp: ../poses/tasks/remove_objects_from_box_aux_grasp.yaml

@@ -33,13 +33,13 @@ def matrix_to_rotation6d(matrix: object) -> np.ndarray:
     value = np.asarray(matrix, dtype=np.float64)
     if value.shape != (3, 3) or not np.isfinite(value).all():
         raise ValueError("rotation matrix must be finite 3x3")
-    return value[:, :2].reshape(6)
+    return np.concatenate((value[:, 0], value[:, 1]))
 
 
 def rotation6d_to_matrix(rotation6d: object) -> np.ndarray:
     value = _vector(rotation6d, 6, "rotation6d")
-    first = value[[0, 2, 4]]
-    second = value[[1, 3, 5]]
+    first = value[:3]
+    second = value[3:]
     first_norm = float(np.linalg.norm(first))
     if first_norm < 1e-6:
         raise ValueError("degenerate first rotation6d column")

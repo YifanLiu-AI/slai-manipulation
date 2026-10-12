@@ -4,24 +4,27 @@ from __future__ import annotations
 
 import numpy as np
 
+from slai_mi.input_schema import (
+    capture_vector_names,
+    compose_capture_vector,
+    enabled_cameras,
+    load_input_schema,
+)
+
 RECORDED_BUTTON_NAMES = (
     "menu", "fit", "r", "f", "one", "two", "three", "home", "esc", "alt", "shift", "ctrl"
 )
 
-FPS = 30
+INPUT_SCHEMA = load_input_schema()
+CAPTURE_SCHEMA = INPUT_SCHEMA["capture"]
+CAMERA_SCHEMAS = enabled_cameras(INPUT_SCHEMA)
+FPS = int(CAPTURE_SCHEMA["fps"])
 MAX_CAMERA_SKEW_MS = 20.0
-IMAGE_HEIGHT = 480
-IMAGE_WIDTH = 640
-UR5_DIM = 6
-WUJI_DIM = 20
-STATE_DIM = UR5_DIM + WUJI_DIM
-ACTION_DIM = UR5_DIM + WUJI_DIM
+IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_CHANNELS = map(int, CAPTURE_SCHEMA["image_shape"])
 
-D435_PRIMARY_RGB = "observation.images.d435_primary_rgb"
-D405_RGB = "observation.images.d405_rgb"
-D435_SECONDARY_RGB = "observation.images.d435_secondary_rgb"
 OBSERVATION_STATE = "observation.state"
-OBSERVATION_TCP_POSE = "observation.tcp_pose"
+TCP_POSE_SCHEMA = CAPTURE_SCHEMA["tcp_pose"]
+OBSERVATION_TCP_POSE = str(TCP_POSE_SCHEMA["key"])
 ACTION = "action"
 UR5_TARGET_QD = "telemetry.ur5_target_qd"
 ACTUAL_TCP_SPEED = "telemetry.actual_tcp_speed"
@@ -35,42 +38,47 @@ SOURCE_RESTARTS = "telemetry.source_restart_counts"
 VALIDITY_MASK = "telemetry.validity_mask"
 SPACEMOUSE_AXES = "telemetry.spacemouse_axes"
 SPACEMOUSE_BUTTONS = "telemetry.spacemouse_buttons"
-CAMERA_SOURCE_NAMES = ("d435_primary_rgb", "d405_rgb", "d435_secondary_rgb")
-SOURCE_NAMES = (*CAMERA_SOURCE_NAMES, "ur5", "wuji", "spacemouse")
+CAMERA_SOURCE_NAMES = tuple(str(camera["role"]) for camera in CAMERA_SCHEMAS)
+STATE_SOURCE_NAMES = tuple(
+    str(item["name"]) for item in INPUT_SCHEMA["synchronization"]["state_channels"]
+)
+COMMAND_SOURCE_NAME = str(INPUT_SCHEMA["synchronization"]["command_channel"]["name"])
+SOURCE_NAMES = (*CAMERA_SOURCE_NAMES, *STATE_SOURCE_NAMES, COMMAND_SOURCE_NAME)
 SPACEMOUSE_BUTTON_NAMES = RECORDED_BUTTON_NAMES
 
-UR5_JOINT_NAMES = (
-    "shoulder_pan_joint",
-    "shoulder_lift_joint",
-    "elbow_joint",
-    "wrist_1_joint",
-    "wrist_2_joint",
-    "wrist_3_joint",
+UR5_JOINT_NAMES = tuple(
+    name.removeprefix("ur5.").removesuffix(".position")
+    for component in CAPTURE_SCHEMA["state"]["components"]
+    if component["channel"] == "ur5"
+    for name in component["names"]
 )
 WUJI_JOINT_NAMES = tuple(
-    f"right_finger{finger}_joint{joint}" for finger in range(1, 6) for joint in range(1, 5)
+    name.removeprefix("wuji.").removesuffix(".position")
+    for component in CAPTURE_SCHEMA["state"]["components"]
+    if component["channel"] == "wuji"
+    for name in component["names"]
 )
-STATE_NAMES = tuple(f"ur5.{name}.position" for name in UR5_JOINT_NAMES) + tuple(
-    f"wuji.{name}.position" for name in WUJI_JOINT_NAMES
-)
-TCP_POSE_NAMES = ("x", "y", "z", "rx", "ry", "rz")
+STATE_NAMES = capture_vector_names(INPUT_SCHEMA, "state")
+TCP_POSE_NAMES = tuple(str(name) for name in TCP_POSE_SCHEMA["names"])
 TCP_TWIST_NAMES = ("vx", "vy", "vz", "wx", "wy", "wz")
-ACTION_NAMES = tuple(f"ur5.tcp.{name}" for name in TCP_TWIST_NAMES) + tuple(
-    f"wuji.{name}.target_position" for name in WUJI_JOINT_NAMES
-)
+ACTION_NAMES = capture_vector_names(INPUT_SCHEMA, "action")
+STATE_DIM = len(STATE_NAMES)
+ACTION_DIM = len(ACTION_NAMES)
+
 
 def lerobot_features() -> dict[str, dict]:
     """Return the exact v3 feature declaration used by the real-data writer."""
     rgb = {
         "dtype": "video",
-        "shape": (IMAGE_HEIGHT, IMAGE_WIDTH, 3),
+        "shape": (IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_CHANNELS),
         "names": ["height", "width", "channels"],
         "info": {"is_depth_map": False},
     }
     return {
-        D435_PRIMARY_RGB: {**rgb, "info": dict(rgb["info"])},
-        D405_RGB: {**rgb, "info": dict(rgb["info"])},
-        D435_SECONDARY_RGB: {**rgb, "info": dict(rgb["info"])},
+        **{
+            str(camera["dataset_key"]): {**rgb, "info": dict(rgb["info"])}
+            for camera in CAMERA_SCHEMAS
+        },
         OBSERVATION_STATE: {
             "dtype": "float32",
             "shape": (STATE_DIM,),
@@ -78,7 +86,7 @@ def lerobot_features() -> dict[str, dict]:
         },
         OBSERVATION_TCP_POSE: {
             "dtype": "float32",
-            "shape": (6,),
+            "shape": (len(TCP_POSE_NAMES),),
             "names": list(TCP_POSE_NAMES),
         },
         ACTION: {
@@ -98,24 +106,48 @@ def lerobot_features() -> dict[str, dict]:
         },
         CAMERA_SKEW_MS: {
             "dtype": "float32",
-            "shape": (2,),
-            "names": ["d405_to_primary", "d435_secondary_to_primary"],
+            "shape": (max(0, len(CAMERA_SOURCE_NAMES) - 1),),
+            "names": [
+                f"{role}_to_{CAPTURE_SCHEMA['primary_timeline_role']}"
+                for role in CAMERA_SOURCE_NAMES
+                if role != CAPTURE_SCHEMA["primary_timeline_role"]
+            ],
         },
-        SOURCE_AGE_MS: {"dtype": "float32", "shape": (6,), "names": list(SOURCE_NAMES)},
+        SOURCE_AGE_MS: {
+            "dtype": "float32",
+            "shape": (len(SOURCE_NAMES),),
+            "names": list(SOURCE_NAMES),
+        },
         DEVICE_TIMESTAMPS_S: {
             "dtype": "float64",
-            "shape": (6,),
+            "shape": (len(SOURCE_NAMES),),
             "names": list(SOURCE_NAMES),
         },
         HOST_RECEIVE_TIMESTAMPS_S: {
             "dtype": "float64",
-            "shape": (6,),
+            "shape": (len(SOURCE_NAMES),),
             "names": list(SOURCE_NAMES),
         },
-        SOURCE_SEQUENCES: {"dtype": "int64", "shape": (6,), "names": list(SOURCE_NAMES)},
-        SOURCE_DROPS: {"dtype": "int64", "shape": (6,), "names": list(SOURCE_NAMES)},
-        SOURCE_RESTARTS: {"dtype": "int64", "shape": (6,), "names": list(SOURCE_NAMES)},
-        VALIDITY_MASK: {"dtype": "int64", "shape": (6,), "names": list(SOURCE_NAMES)},
+        SOURCE_SEQUENCES: {
+            "dtype": "int64",
+            "shape": (len(SOURCE_NAMES),),
+            "names": list(SOURCE_NAMES),
+        },
+        SOURCE_DROPS: {
+            "dtype": "int64",
+            "shape": (len(SOURCE_NAMES),),
+            "names": list(SOURCE_NAMES),
+        },
+        SOURCE_RESTARTS: {
+            "dtype": "int64",
+            "shape": (len(SOURCE_NAMES),),
+            "names": list(SOURCE_NAMES),
+        },
+        VALIDITY_MASK: {
+            "dtype": "int64",
+            "shape": (len(SOURCE_NAMES),),
+            "names": list(SOURCE_NAMES),
+        },
         SPACEMOUSE_AXES: {
             "dtype": "float32",
             "shape": (6,),
@@ -130,20 +162,26 @@ def lerobot_features() -> dict[str, dict]:
 
 
 def compose_state(ur5_actual_q: object, wuji_actual_q: object) -> np.ndarray:
-    return np.concatenate(
-        (
-            np.asarray(ur5_actual_q, dtype=np.float32),
-            np.asarray(wuji_actual_q, dtype=np.float32),
-        ),
-        dtype=np.float32,
+    from types import SimpleNamespace
+
+    return compose_capture_vector(
+        INPUT_SCHEMA,
+        "state",
+        {
+            "ur5": SimpleNamespace(actual_q=ur5_actual_q),
+            "wuji": SimpleNamespace(actual_q=wuji_actual_q),
+        },
     )
 
 
 def compose_action(ur5_target_tcp_speed: object, wuji_target_q: object) -> np.ndarray:
-    return np.concatenate(
-        (
-            np.asarray(ur5_target_tcp_speed, dtype=np.float32),
-            np.asarray(wuji_target_q, dtype=np.float32),
-        ),
-        dtype=np.float32,
+    from types import SimpleNamespace
+
+    return compose_capture_vector(
+        INPUT_SCHEMA,
+        "action",
+        {
+            "ur5": SimpleNamespace(target_tcp_speed=ur5_target_tcp_speed),
+            "wuji": SimpleNamespace(command_q=wuji_target_q),
+        },
     )

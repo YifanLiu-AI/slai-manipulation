@@ -97,3 +97,13 @@ def test_execute_requires_configured_backends() -> None:
         train.main(["--execute"])
     with pytest.raises(SystemExit, match="inference backend is not configured"):
         inference.main(["--execute"])
+
+
+def test_pi05_inference_reenters_model_environment(monkeypatch) -> None:
+    monkeypatch.setattr(inference, "reexec_with_python", lambda *_args: 23)
+    assert (
+        inference.main(
+            ["--config", "configs/inference_pi05_round10.yaml", "--execute"]
+        )
+        == 23
+    )

@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -41,5 +42,11 @@ def test_migration_keeps_capability_boundaries() -> None:
 
 def test_generated_artifacts_are_not_source_directories() -> None:
     forbidden = ("logs", "outputs", "checkpoints", "swanlog", "tmp")
-    present = [path for path in forbidden if (PROJECT_ROOT / path).exists()]
-    assert not present, f"generated artifact directories must stay out of source: {present}"
+    tracked = subprocess.run(
+        ["git", "ls-files", "--", *forbidden],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.splitlines()
+    assert not tracked, f"generated artifact directories must stay untracked: {tracked}"

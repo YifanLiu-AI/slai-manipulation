@@ -9,7 +9,12 @@ from slai_mi.datasets.lerobot_v3.contract import (
     validate_frame,
     write_contract_manifest,
 )
-from slai_mi.datasets.lerobot_v3.schema import ACTION, SOURCE_DROPS, lerobot_features
+from slai_mi.datasets.lerobot_v3.schema import (
+    ACTION,
+    OBSERVATION_TCP_POSE,
+    SOURCE_DROPS,
+    lerobot_features,
+)
 
 
 def canonical_frame() -> dict[str, object]:
@@ -20,6 +25,7 @@ def canonical_frame() -> dict[str, object]:
         )
         for key, feature in lerobot_features().items()
     }
+    frame[OBSERVATION_TCP_POSE][3:] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
     frame["task"] = "place the block in the box"
     return frame
 
@@ -37,6 +43,12 @@ def test_frame_and_manifest_follow_contract(tmp_path) -> None:
         (lambda frame: frame.pop(ACTION), "keys differ"),
         (lambda frame: frame.__setitem__(ACTION, np.zeros(32, np.float32)), "shape"),
         (lambda frame: np.asarray(frame[SOURCE_DROPS]).__setitem__(0, -1), "nonnegative"),
+        (
+            lambda frame: np.asarray(frame[OBSERVATION_TCP_POSE]).__setitem__(
+                slice(3, None), 0.0
+            ),
+            "degenerate first rotation6d column",
+        ),
     ],
 )
 def test_corrupt_frames_are_rejected(mutation, message) -> None:

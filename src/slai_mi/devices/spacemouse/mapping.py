@@ -13,7 +13,7 @@ from .buttons import Button
 
 class MotionMode(str, Enum):
     TRANSLATION_XYZ = "translation_xyz"
-    ROTATION_TCP = "rotation_tcp"
+    ROTATION_BASE = "rotation_base"
     WRIST_3_JOINT = "wrist_3_joint"
 
 
@@ -88,13 +88,13 @@ def build_hardware_twist(
     buttons: Mapping[int, bool],
     speed: SpeedLimits,
 ) -> MotionCommand:
-    """Map the cap to isolated XYZ translation or TCP-local rotation."""
+    """Map the cap to isolated base-frame XYZ translation or rotation."""
     cap = _vector6(motion)
     twist = np.zeros(6, dtype=np.float64)
     if _pressed(buttons, Button.SHIFT):
         angular = _limit_unit_norm(cap[3:], speed.limit_vector_norm)
         twist[3:] = angular * speed.rotation
-        return MotionCommand(twist, MotionMode.ROTATION_TCP)
+        return MotionCommand(twist, MotionMode.ROTATION_BASE)
 
     linear = _limit_unit_norm(cap[:3], speed.limit_vector_norm)
     twist[:3] = linear * speed.translation

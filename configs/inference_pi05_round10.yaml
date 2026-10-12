@@ -1,0 +1,12 @@
+schema_version: 1
+target: offline
+backend: slai_mi.policies.pi05_lerobot:factory
+checkpoint: outputs/pi05/cli-smoke-round10/checkpoints/000001/pretrained_model
+device: cuda
+input_schema: configs/input_schema.yaml
+dataset:
+  repo_id: local/pi05-native
+  root: data/training/pi05/block_into_box_pi05_native_v30_schema_round10
+  physical_v21_root: data/training/pi05/block_into_box_v21_schema_round10
+  video_backend: pyav
+  frame_index: 0

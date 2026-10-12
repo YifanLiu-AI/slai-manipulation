@@ -1,7 +1,7 @@
 schema_version: 1
 name: block_into_box_open
 kind: hand_preset
-configured: false
+configured: true
 units: rad
 joint_group: wujihand
 joint_names: [right_finger1_joint1, right_finger1_joint2, right_finger1_joint3, right_finger1_joint4, right_finger2_joint1, right_finger2_joint2, right_finger2_joint3, right_finger2_joint4, right_finger3_joint1, right_finger3_joint2, right_finger3_joint3, right_finger3_joint4, right_finger4_joint1, right_finger4_joint2, right_finger4_joint3, right_finger4_joint4, right_finger5_joint1, right_finger5_joint2, right_finger5_joint3, right_finger5_joint4]
@@ -9,4 +9,4 @@ joint_positions: [0.38846272859564046, 0.09036175217747225, -0.01806695636395006
 provenance:
   source: legacy:task/block_into_box/config.yaml#start_pose.wuji_hand_state_0
   record_type: derived_from_task_start
-  safety_note: Historical measurement; verify before enabling motion.
+  safety_note: Commissioned legacy task state 0; values equal the task zero Wuji slice.

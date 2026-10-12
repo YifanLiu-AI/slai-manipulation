@@ -4,11 +4,29 @@ units:
   translation_speed: m/s
   rotation_speed: rad/s
 motion:
+  control_hz: 125
+  acceleration: 0.50
+  wrist_3_jog_speed: 0.20
+  home_joint_speed: 0.60
+  # Zero disables the obsolete startup-relative workspace envelopes.
+  max_offset_mm: 0.0
+  max_rotation_deg: 0.0
   translation_speed: 0.080
   rotation_speed: 0.45
   precision_translation_speed: 0.25
   precision_rotation_speed: 0.60
   deadzone: 0.12
+hand:
+  command_hz: 30
+  grasp_speed: 0.25
+  grasp_acceleration: 0.75
+  release_speed: 3.0
+  release_acceleration: 20.0
+  retarget_speed: 1.50
+  retarget_acceleration: 8.0
+  lost_hand_return_delay: 0.50
+  one_euro_min_cutoff: 3.0
+  one_euro_beta: 1.0
 bindings:
   menu: start_episode
   fit: save_episode

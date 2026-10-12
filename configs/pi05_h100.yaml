@@ -1,0 +1,36 @@
+schema_version: 1
+openpi_commit: 15a9616a00943ada6c20a0f158e3adb39df2ccac
+lerobot_v21_commit: 0cf864870cf29f4738d3ade893e6fd13fbd7cdb5
+
+dataset:
+  input_schema: configs/input_schema.yaml
+  source: data/lerobot/remove_objects_from_box-20mm-20260817T191606
+  converted: data/training/pi05/native-e2e-20260821_v21
+  repo_id: native-e2e-20260821_v21
+  native_repo_id: local/native-e2e-20260821-pi05
+  native_v21: data/training/pi05/native-e2e-20260821_native_v21
+  native_v30: data/training/pi05/native-e2e-20260821_native_v30
+
+policy:
+  task_prompt: Remove the objects from the box.
+
+training:
+  backend: lerobot_pytorch
+  experiment: h100-native-e2e
+  batch_size: 4
+  steps: 30000
+  save_interval: 5000
+  seed: 42
+  base_checkpoint: data/models/pi05-base
+  base_checkpoint_dir: data/models/pi05-base
+  openpi_root: third_party/openpi
+  lerobot_v21_python: third_party/openpi/.venv/bin/python
+  lerobot_v3_python: .venv-lerobot-v3/bin/python
+  assets_dir: data/normalization/pi05/native-e2e-20260821
+  checkpoints_dir: outputs/pi05
+  lerobot_train: .venv-lerobot-v3/bin/lerobot-train
+  generated_train_config: outputs/pi05/h100/train.yaml
+  training_output_dir: outputs/pi05/h100/full
+  smoke_output_dir: outputs/pi05/h100/smoke
+  output_repo_id: local/h100-native-e2e-policy
+  lora_rank: 4

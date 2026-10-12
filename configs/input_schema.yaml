@@ -1,0 +1,147 @@
+schema_version: 1
+
+capture:
+  fps: 30
+  cameras:
+    - role: primary
+      label: 主视角
+      enabled: true
+      source_keys:
+        - observation.images.d435_primary_rgb
+        - observation.images.primary_rgb
+      dataset_key: observation.images.d435_primary_rgb
+      openpi_key: primary_rgb
+      policy_key: observation.images.base_0_rgb
+      retarget_input: true
+    - role: wrist
+      label: 手腕视角
+      enabled: true
+      source_keys:
+        - observation.images.d405_rgb
+      dataset_key: observation.images.d405_rgb
+      openpi_key: wrist_rgb
+      policy_key: observation.images.right_wrist_0_rgb
+      retarget_input: false
+    - role: secondary
+      label: 辅助视角
+      enabled: true
+      source_keys:
+        - observation.images.d435_secondary_rgb
+        - observation.images.secondary_rgb
+      dataset_key: observation.images.d435_secondary_rgb
+      openpi_key: secondary_rgb
+      policy_key: observation.images.left_wrist_0_rgb
+      retarget_input: false
+  image_shape: [480, 640, 3]
+  primary_timeline_role: primary
+  tcp_pose:
+    key: observation.tcp_pose
+    source_representation: xyz_rotvec_in_ur_base_frame
+    dataset_representation: xyz_rotation6d_columns_in_ur_base_frame
+    names: [x, y, z, r00, r10, r20, r01, r11, r21]
+  state:
+    key: observation.state
+    components:
+      - channel: ur5
+        attribute: actual_q
+        indices: all
+        names: [ur5.shoulder_pan_joint.position, ur5.shoulder_lift_joint.position, ur5.elbow_joint.position, ur5.wrist_1_joint.position, ur5.wrist_2_joint.position, ur5.wrist_3_joint.position]
+      - channel: wuji
+        attribute: actual_q
+        indices: all
+        names:
+          - wuji.right_finger1_joint1.position
+          - wuji.right_finger1_joint2.position
+          - wuji.right_finger1_joint3.position
+          - wuji.right_finger1_joint4.position
+          - wuji.right_finger2_joint1.position
+          - wuji.right_finger2_joint2.position
+          - wuji.right_finger2_joint3.position
+          - wuji.right_finger2_joint4.position
+          - wuji.right_finger3_joint1.position
+          - wuji.right_finger3_joint2.position
+          - wuji.right_finger3_joint3.position
+          - wuji.right_finger3_joint4.position
+          - wuji.right_finger4_joint1.position
+          - wuji.right_finger4_joint2.position
+          - wuji.right_finger4_joint3.position
+          - wuji.right_finger4_joint4.position
+          - wuji.right_finger5_joint1.position
+          - wuji.right_finger5_joint2.position
+          - wuji.right_finger5_joint3.position
+          - wuji.right_finger5_joint4.position
+  action:
+    key: action
+    components:
+      - channel: ur5
+        attribute: target_tcp_speed
+        indices: all
+        names: [ur5.tcp.vx, ur5.tcp.vy, ur5.tcp.vz, ur5.tcp.wx, ur5.tcp.wy, ur5.tcp.wz]
+      - channel: wuji
+        attribute: command_q
+        indices: all
+        names:
+          - wuji.right_finger1_joint1.target_position
+          - wuji.right_finger1_joint2.target_position
+          - wuji.right_finger1_joint3.target_position
+          - wuji.right_finger1_joint4.target_position
+          - wuji.right_finger2_joint1.target_position
+          - wuji.right_finger2_joint2.target_position
+          - wuji.right_finger2_joint3.target_position
+          - wuji.right_finger2_joint4.target_position
+          - wuji.right_finger3_joint1.target_position
+          - wuji.right_finger3_joint2.target_position
+          - wuji.right_finger3_joint3.target_position
+          - wuji.right_finger3_joint4.target_position
+          - wuji.right_finger4_joint1.target_position
+          - wuji.right_finger4_joint2.target_position
+          - wuji.right_finger4_joint3.target_position
+          - wuji.right_finger4_joint4.target_position
+          - wuji.right_finger5_joint1.target_position
+          - wuji.right_finger5_joint2.target_position
+          - wuji.right_finger5_joint3.target_position
+          - wuji.right_finger5_joint4.target_position
+
+pi05:
+  fps: 15
+  action_horizon: 15
+  model_image_slots: [base_0_rgb, left_wrist_0_rgb, right_wrist_0_rgb]
+  state:
+    sources:
+      - key: observation.tcp_pose
+        indices: all
+        transform: ur_base_tcp_pose_to_rotation6d_columns
+        output_dim: 9
+      - key: observation.state
+        indices: [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+    model_pad_to: 32
+  action:
+    key: action
+    indices: all
+    model_pad_to: 32
+    delta_from_state:
+      action_indices: [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+      state_indices: [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28]
+
+synchronization:
+  state_channels:
+    - name: ur5
+      field: observation.state
+      indices: [0, 1, 2, 3, 4, 5]
+      interpolation: linear
+    - name: wuji
+      field: observation.state
+      indices: [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+      interpolation: linear
+  command_channel:
+    name: spacemouse
+    field: action
+    indices: all
+    interpolation: zoh
+  retain_s: 5.0
+  clock_window: 180
+  clock_slope_range: [0.98, 1.02]
+  max_camera_skew_ms: 20.0
+  max_camera_age_ms: 100.0
+  max_state_age_ms: 100.0
+  max_command_age_ms: 250.0

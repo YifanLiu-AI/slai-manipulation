@@ -40,13 +40,12 @@ from .geometry import (
     home_twist,
     joint_home_velocity,
     rotation_offset_rad,
-    tcp_angular_velocity_to_base,
 )
 from .zero_pose import load_zero_pose
 
 NORMAL_SAFETY_MODE = 1
 RUNNING_ROBOT_MODE = 7
-LOCK_PATH = Path("/tmp/slai_mi_ur5_spacemouse.lock")
+LOCK_PATH = Path("/tmp/robot_teleoperation_ur5_spacemouse.lock")
 
 
 @dataclass(frozen=True)
@@ -508,8 +507,6 @@ class UR5TeleopRuntime:
                 home_reached_last = False
                 self._enforce_hard_envelope(offset_m, angle_rad)
                 twist = motion_command.twist
-                if motion_command.mode is MotionMode.ROTATION_TCP:
-                    twist = tcp_angular_velocity_to_base(twist, current_pose)
 
                 horizon_s = max(0.25, 2.0 * config.period_s)
                 twist, boundary = apply_relative_workspace_guard(

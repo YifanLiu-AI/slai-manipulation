@@ -1,0 +1,44 @@
+# Historical archive only. Runtime task profiles live in ../controls/.
+schema_version: 1
+archive_status: historical_evidence_not_runtime_config
+source_files:
+  block_into_box: /home/user/shiyi/workspace/shared/task/block_into_box/spacemouse.yaml
+  remove_objects_from_box: /home/user/shiyi/workspace/shared/task/remove_objects_from_box/spacemouse.yaml
+  remove_objects_from_box_20mm: /home/user/shiyi/workspace/shared/task/remove_objects_from_box-20mm/spacemouse.yaml
+common_motion:
+  translation_speed_m_s: 0.080
+  rotation_speed_rad_s: 0.45
+  ctrl_translation_speed_m_s: 0.25
+  ctrl_rotation_speed_rad_s: 0.60
+  deadzone: 0.12
+  control_hz: 125
+  acceleration: 0.50
+device:
+  observed_identifier: usb-3Dconnexion_SpaceMouse_Pro-event-mouse
+  shift_behavior: tcp_local_rotation
+  button_4_behavior: ur5_and_wujihand1_home
+profiles:
+  legacy_button3_toggle:
+    task: block_into_box
+    bindings:
+      menu: start_episode
+      fit: save_episode
+      esc: discard_episode_and_home
+      button_1: ur5_wrist_3_joint_clockwise_jog
+      button_2: ur5_wrist_3_joint_counterclockwise_jog
+      button_3: hold_toward_state_1_double_click_toggle_toward_state_0
+      button_4: ur5_and_wujihand1_home
+      ctrl_c: finalize_dataset
+  circled_thumb_control:
+    tasks: [remove_objects_from_box, remove_objects_from_box-20mm]
+    bindings:
+      menu: start_episode
+      fit: save_episode
+      esc: discard_episode_and_home
+      button_1: ur5_wrist_3_joint_clockwise_jog
+      button_2: ur5_wrist_3_joint_counterclockwise_jog
+      button_3: hold_toward_state_1_double_click_toggle_toward_state_0
+      button_4: ur5_and_wujihand1_home
+      roll_cw: wujihand1_full_hand_toward_state_1
+      t: wujihand1_full_hand_restore_state_0
+      rotation_lock: finalize_dataset

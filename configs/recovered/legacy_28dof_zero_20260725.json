@@ -1,0 +1,27 @@
+{
+  "format_version": 1,
+  "name": "legacy_28dof_zero_20260725",
+  "archive_status": "historical_evidence_not_runtime_config",
+  "actual_dimension": 26,
+  "units": "rad",
+  "captured_at": "2026-07-25T00:12:45+08:00",
+  "capture_skew_ms": 516.938,
+  "provenance": {
+    "verbatim_source": "/home/user/shiyi/workspace/legacy/Robot_Teleoperation/record/28DOF零位",
+    "matching_task_config": "/home/user/shiyi/workspace/shared/task/block_into_box/config.yaml#start_pose",
+    "note": "The legacy filename says 28DOF, but the recorded vector is 26 DoF: UR5[6] followed by WujiHand[20]."
+  },
+  "ur5": {
+    "robot_host": "192.168.1.106",
+    "joint_names": ["shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint", "wrist_1_joint", "wrist_2_joint", "wrist_3_joint"],
+    "actual_joint_positions_rad": [3.1329050064086914, -1.5901020208941858, -1.7225020567523401, -0.23603994051088506, 1.7258871793746948, -0.9308517614947718]
+  },
+  "wuji_hand1": {
+    "usb_serial": "387E36623533",
+    "product_serial": "LQSQJR.260430.002",
+    "joint_names": ["right_finger1_joint1", "right_finger1_joint2", "right_finger1_joint3", "right_finger1_joint4", "right_finger2_joint1", "right_finger2_joint2", "right_finger2_joint3", "right_finger2_joint4", "right_finger3_joint1", "right_finger3_joint2", "right_finger3_joint3", "right_finger3_joint4", "right_finger4_joint1", "right_finger4_joint2", "right_finger4_joint3", "right_finger4_joint4", "right_finger5_joint1", "right_finger5_joint2", "right_finger5_joint3", "right_finger5_joint4"],
+    "actual_joint_positions_rad": [0.38846272859564046, 0.09036175217747225, -0.018066956363950067, -0.024368862203700836, 0.2183019960217428, -0.20780269147867644, -0.029969872288003695, -0.021127784752592152, 0.22308222713978212, -0.20578086847211993, -0.02869209526858126, -0.02812458838366304, 0.22015227140257224, -0.20825366816101828, -0.02664804468471802, -0.027316279331113004, 0.22222357615026492, -0.20411234603354328, -0.02340399750990704, -0.01623599150177595],
+    "joint_errors": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  },
+  "combined_actual_joint_positions_rad": [3.1329050064086914, -1.5901020208941858, -1.7225020567523401, -0.23603994051088506, 1.7258871793746948, -0.9308517614947718, 0.38846272859564046, 0.09036175217747225, -0.018066956363950067, -0.024368862203700836, 0.2183019960217428, -0.20780269147867644, -0.029969872288003695, -0.021127784752592152, 0.22308222713978212, -0.20578086847211993, -0.02869209526858126, -0.02812458838366304, 0.22015227140257224, -0.20825366816101828, -0.02664804468471802, -0.027316279331113004, 0.22222357615026492, -0.20411234603354328, -0.02340399750990704, -0.01623599150177595]
+}

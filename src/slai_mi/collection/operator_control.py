@@ -51,3 +51,10 @@ class SpaceMouseEpisodeControls:
 
     def abort(self) -> None:
         self.recording = False
+
+    def synchronize(self, buttons: Mapping[int, bool]) -> None:
+        """Consume button levels while lifecycle gates intentionally block actions."""
+        self._previous = {
+            button: bool(buttons.get(button, False))
+            for button in (self.menu_button, self.fit_button, self.esc_button)
+        }

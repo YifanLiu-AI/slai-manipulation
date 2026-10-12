@@ -1,0 +1,39 @@
+schema_version: 1
+openpi_commit: 15a9616a00943ada6c20a0f158e3adb39df2ccac
+lerobot_v21_commit: 0cf864870cf29f4738d3ade893e6fd13fbd7cdb5
+
+dataset:
+  input_schema: configs/input_schema.yaml
+  source: data/lerobot/remove_objects_from_box-20mm-20260817T191606
+  converted: data/training/pi05/native-e2e-20260821_v21
+  repo_id: native-e2e-20260821_v21
+  native_repo_id: local/native-e2e-20260821-pi05
+  native_v21: data/training/pi05/native-e2e-20260821_native_v21
+  native_v30: data/training/pi05/native-e2e-20260821_native_v30
+
+policy:
+  task_prompt: Remove the objects from the box.
+
+training:
+  backend: openpi_jax
+  experiment: h100-jax
+  project_name: slai-pi05-jax
+  batch_size: 16
+  steps: 30000
+  save_interval: 5000
+  seed: 42
+  base_checkpoint: gs://openpi-assets/checkpoints/pi05_base/params
+  base_checkpoint_dir: data/models/pi05-base
+  openpi_root: third_party/openpi
+  lerobot_v21_python: .venv-openpi/bin/python
+  lerobot_v3_python: .venv-lerobot-v3/bin/python
+  assets_dir: data/normalization/pi05/native-e2e-20260821
+  checkpoints_dir: outputs/pi05/jax
+  lerobot_train: .venv-lerobot-v3/bin/lerobot-train
+  generated_train_config: outputs/pi05/h100/train.yaml
+  training_output_dir: outputs/pi05/h100/full
+  smoke_output_dir: outputs/pi05/h100/smoke
+  output_repo_id: local/h100-native-e2e-policy
+  lora_rank: 4
+  fsdp_devices: 1
+  swanlab_enabled: true

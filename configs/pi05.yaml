@@ -5,29 +5,34 @@ openpi_commit: 15a9616a00943ada6c20a0f158e3adb39df2ccac
 lerobot_v21_commit: 0cf864870cf29f4738d3ade893e6fd13fbd7cdb5
 
 dataset:
-  source: data/raw/imports/block_into_box_0725-0315/block_into_box
-  converted: data/training/pi05/block_into_box_v21
+  input_schema: configs/input_schema.yaml
+  source: data/lerobot/block_into_box-20260816T194416
+  converted: data/training/pi05/block_into_box_20260816T194416_rot6d_columns_v21
   repo_id: local/slai-ur5-wujihand-pi05
-  source_fps: 30
-  policy_fps: 15
+  native_repo_id: local/pi05-native
+  native_v21: data/training/pi05/block_into_box_20260816T194416_rot6d_columns_native_v21
+  native_v30: data/training/pi05/block_into_box_20260816T194416_rot6d_columns_native_v30
 
 policy:
-  state_dim: 32
-  action_dim: 26
-  action_horizon: 15
   task_prompt: pick up the block and place it into the box
 
 training:
   backend: lerobot_pytorch
-  experiment: block_into_box_seed42
+  experiment: block_into_box_rot6d_columns_seed42
   batch_size: 16
   steps: 30000
   save_interval: 5000
   seed: 42
-  base_checkpoint: lerobot/pi0fast-base
-  base_checkpoint_dir: data/models/pi0fast-base
+  base_checkpoint: data/models/pi05-base
+  base_checkpoint_dir: data/models/pi05-base
   openpi_root: third_party/openpi
   lerobot_v21_python: third_party/openpi/.venv/bin/python
   lerobot_v3_python: .venv-lerobot-v3/bin/python
-  assets_dir: data/normalization/pi05
-  checkpoints_dir: outputs/openpi_checkpoints
+  assets_dir: data/normalization/pi05_20260816T194416_rot6d_columns
+  checkpoints_dir: outputs/pi05
+  lerobot_train: .venv-lerobot-v3/bin/lerobot-train
+  generated_train_config: outputs/pi05/pi05_train_20260816T194416_rot6d_columns.yaml
+  training_output_dir: outputs/pi05/block_into_box_20260816T194416_rot6d_columns_full
+  smoke_output_dir: outputs/pi05/block_into_box_20260816T194416_rot6d_columns_1step
+  output_repo_id: local/slai-pi05
+  lora_rank: 4

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -53,3 +55,19 @@ def enabled_devices(config: dict[str, Any]) -> list[str]:
         for name, section in config.items()
         if isinstance(section, dict) and section.get("enabled", False)
     )
+
+
+def reexec_with_python(python: str | Path, module: str, argv: list[str], marker: str) -> int | None:
+    """Re-enter a CLI in its pinned environment while preserving local source imports."""
+    executable = project_path(python).absolute()
+    if os.environ.get(marker) == "1":
+        return None
+    if not executable.is_file():
+        raise ValueError(f"required Python does not exist: {executable}")
+    environment = os.environ.copy()
+    environment[marker] = "1"
+    source = str(PROJECT_ROOT / "src")
+    environment["PYTHONPATH"] = source + os.pathsep + environment.get("PYTHONPATH", "")
+    return subprocess.run(
+        [str(executable), "-m", module, *argv], env=environment, check=False
+    ).returncode

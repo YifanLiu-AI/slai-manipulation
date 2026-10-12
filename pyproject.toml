@@ -5,12 +5,18 @@ description = "Wujihand and UR5 data collection, training, and inference pipelin
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "msgpack>=1.0",
     "numpy>=1.26",
+    "pillow>=10.0",
     "pyyaml>=6.0",
     "scipy>=1.15",
 ]
 
 [project.optional-dependencies]
+pi05-train = [
+    "swanlab>=0.9,<1",
+    "wandb>=0.19",
+]
 pose-hub = [
     "fastapi>=0.115",
     "pin>=4.1,<5",
@@ -26,8 +32,11 @@ slai-collect-sim = "slai_mi.apps.collect_sim:main"
 slai-collection-ui = "slai_mi.ui.collection_frontend:main"
 slai-train = "slai_mi.train:main"
 slai-infer = "slai_mi.inference:main"
+# Canonical name; keep slai-infer above as a backwards-compatible alias.
+slai-mi-infer = "slai_mi.inference:main"
 slai-evaluate = "slai_mi.apps.evaluate:main"
 slai-pi05 = "slai_mi.apps.pi05:main"
+slai-deploy-real = "slai_mi.apps.deploy_real:main"
 slai-pose-hub = "slai_mi.apps.pose_hub:main"
 slai-pose-hub-bridge = "slai_mi.apps.pose_hub_bridge:main"
 

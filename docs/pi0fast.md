@@ -13,11 +13,10 @@ cd /home/user/shiyi/workspace/active/slai-manipulation
   --local-dir data/models/pi0fast-base
 ```
 
-The converted dataset remains at
-`data/training/pi05/block_into_box_v21`. LeRobot's PI0 policy uses 224x224
-images, a padded 32-dimensional state, and a padded 32-dimensional action
-vector; the project adapter removes the six action padding dimensions when
-commands are sent to the UR5/Wujihand contract.
+PI0-Fast remains a deferred policy backend. It must consume the same
+`configs/input_schema.yaml` camera, DoF, padding, FPS and horizon declaration as
+PI0.5; there is deliberately no separately maintained static train YAML with a
+fixed camera count or fixed 32-dimensional vectors.
 
 The checkpoint cannot be loaded by OpenPI's JAX `CheckpointWeightLoader`.
 Use the LeRobot `lerobot-train` entrypoint with the PI0 policy configuration
@@ -27,13 +26,8 @@ The current LeRobot environment is pinned to `transformers>=5.4,<5.6`.
 Using a newer Transformers release changes the PaliGemma module names and
 causes false-looking missing-key warnings while loading this checkpoint.
 
-Start training with:
-
-```bash
-.venv-lerobot-v3/bin/lerobot-train \
-  --config_path=configs/pi0fast_train.yaml
-```
-
-For a one-step wiring check, override `--steps=1 --batch_size=1` before a
-full run. The first invocation downloads the tokenizer and model assets from
-Hugging Face if they are not already cached.
+Before enabling this backend, add a schema-driven generator equivalent to
+`slai_mi.training.lerobot_pi05`, select and download a maintained checkpoint,
+then run a one-step checkpoint/inference acceptance. The current PI0.5 command
+must not be relabeled as PI0-Fast, and a handwritten LeRobot config is not an
+accepted production entry point.
