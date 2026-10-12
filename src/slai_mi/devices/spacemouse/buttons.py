@@ -16,7 +16,8 @@ class Button(IntEnum):
     ONE = 12
     TWO = 13
     THREE = 14
-    HOME = 15
+    FOUR = 15
+    HOME = FOUR  # Backward-compatible name for the physical 4 key.
     ESC = 22
     ALT = 23
     SHIFT = 24

@@ -233,7 +233,7 @@ h2 { margin: 1px 0 0; font-size: 11px; line-height: 1; font-weight: 700; text-tr
 .collection-title-line { min-width: 0; display: grid; gap: 3px; }
 .collection-title-line strong { overflow: hidden; color: var(--on-surface); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .collection-title-line span { overflow: hidden; color: var(--outline); font: 9px var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
-.collection-metrics { display: grid; grid-template-columns: repeat(4, minmax(72px, 1fr)); gap: 5px; }
+.collection-metrics { display: grid; grid-template-columns: repeat(6, minmax(58px, 1fr)); gap: 5px; }
 .collection-metrics span { min-width: 0; color: var(--outline); font-size: 9px; white-space: nowrap; }
 .collection-metrics strong { display: block; margin-top: 1px; color: var(--blue); font: 700 15px var(--font-mono); font-variant-numeric: tabular-nums; }
 .dataset-history { flex: 0 0 96px; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); border-bottom: 1px solid rgba(193, 198, 215, 0.45); }

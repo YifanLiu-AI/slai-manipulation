@@ -17,10 +17,18 @@ class WorkerBackend(Protocol):
     def close(self) -> None: ...
 
 
-def serve(*, socket_path: Path, device_id: str, backend_factory: Callable[[], WorkerBackend], watchdog_s: float) -> None:
+def serve(
+    *,
+    socket_path: Path,
+    device_id: str,
+    backend_factory: Callable[[], WorkerBackend],
+    watchdog_s: float,
+    watchdog_refresh_types: frozenset[str] | None = None,
+) -> None:
     backend = backend_factory()
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     armed = False
+    watchdog_active = False
     try:
         server.bind(str(socket_path))
         server.listen(1)
@@ -32,27 +40,38 @@ def serve(*, socket_path: Path, device_id: str, backend_factory: Callable[[], Wo
                 try:
                     request = receive_message(connection)
                 except TimeoutError:
-                    if armed and time.monotonic() - last_contact > watchdog_s:
+                    if armed and watchdog_active and time.monotonic() - last_contact > watchdog_s:
                         backend.disable()
                         armed = False
+                        watchdog_active = False
                     continue
                 except (ConnectionError, OSError):
                     break
-                last_contact = time.monotonic()
                 sequence = request.get("sequence", -1)
                 try:
                     validate_message(request, device_id=device_id)
                     message_type = str(request.get("type"))
+                    now = time.monotonic()
+                    if armed and watchdog_active and now - last_contact > watchdog_s:
+                        backend.disable()
+                        armed = False
+                        watchdog_active = False
+                    if watchdog_refresh_types is None or message_type in watchdog_refresh_types:
+                        last_contact = now
+                        watchdog_active = message_type.startswith("write_")
                     if message_type == "hello":
                         result: Mapping[str, Any] = {"type": "ready"}
                     elif message_type == "heartbeat":
                         result = {"type": "heartbeat", "armed": armed}
                     elif message_type == "arm":
                         armed = True
+                        watchdog_active = False
+                        last_contact = time.monotonic()
                         result = {"type": "armed"}
                     elif message_type == "disable":
                         backend.disable()
                         armed = False
+                        watchdog_active = False
                         result = {"type": "disabled"}
                     elif message_type == "shutdown":
                         backend.disable()

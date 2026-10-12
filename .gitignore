@@ -26,4 +26,13 @@ logs/
 
 # Third-party embedded repos and vendored code are managed upstream,
 # not committed to this repository.
-third_party/
+third_party/*
+!third_party/README.md
+!third_party/wuji-retargeting/
+*.egg-info/
+.coverage
+.h100-home/
+.local/
+wandb/
+runtime/
+assets/robots/ur5e_official_skins/previews*/

@@ -163,10 +163,9 @@ def thumb_group_mode(
     buttons: Mapping[int, bool], *, home_active: bool = False
 ) -> str | None:
     toward_pressed = bool(buttons.get(int(Button.ROLL_CW), False))
-    restore_pressed = bool(buttons.get(int(Button.T), False))
-    if home_active or toward_pressed == restore_pressed:
+    if home_active or not toward_pressed:
         return None
-    return "toward_state_1" if toward_pressed else "restore_state_0"
+    return "toward_state_1"
 
 
 def combine_grasp_modes(
@@ -231,10 +230,9 @@ class ManualWujiController:
         *,
         hold_when_inactive: bool = True,
     ) -> bool:
-        home_active = bool(buttons.get(int(Button.HOME), False))
-        button3 = self.grasp_control.update(
-            bool(buttons.get(int(Button.THREE), False)), now, home_active=home_active
-        )
+        home_active = bool(buttons.get(int(Button.T), False))
+        # Buttons 3 and 4 are reserved for a future gripper and must not move WujiHand.
+        button3 = self.grasp_control.update(False, now, home_active=home_active)
         fr_mode = fr_grasp_mode(buttons, home_active=home_active)
         mode, source = combine_grasp_modes(button3, fr_mode)
         thumb_mode = thumb_group_mode(buttons, home_active=home_active)

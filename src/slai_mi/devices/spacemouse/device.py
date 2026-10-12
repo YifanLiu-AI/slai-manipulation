@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import threading
 import time
 from collections import deque
@@ -85,6 +86,9 @@ class SpaceMouse:
         self._pending_button_states: deque[tuple[dict[int, bool], float]] = deque()
         self._last_motion_time = 0.0
         self._last_button_time = 0.0
+        self._event_count = 0
+        self._reconnect_count = 0
+        self._connected = False
         self._failure: BaseException | None = None
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -150,6 +154,7 @@ class SpaceMouse:
             with self._lock:
                 self._raw_motion[:] = raw
                 self._last_motion_time = timestamp
+                self._event_count += 1
             return
         if isinstance(event, spnav.SpnavButtonEvent):
             with self._lock:
@@ -157,35 +162,80 @@ class SpaceMouse:
                 if pressed != self._buttons.get(event.bnum, False):
                     self._buttons[event.bnum] = pressed
                     self._last_button_time = timestamp
+                    self._event_count += 1
                     self._pending_button_states.append((self._buttons.copy(), timestamp))
 
     def _run(self) -> None:
-        opened = False
         evdev_reader: EvdevReader | None = None
+        connected = False
         try:
-            if self.backend == "evdev":
-                assert self.event_device is not None
-                evdev_reader = EvdevReader(self.event_device)
-                evdev_reader.open()
-                poll_event = evdev_reader.poll_event
-            else:
-                spnav.open_connection()
-                poll_event = spnav.poll_event
-            opened = True
-            self._ready.set()
             while not self._stop.is_set():
-                event = poll_event()
-                if event is None:
-                    time.sleep(self.poll_interval)
-                    continue
-                self._handle_event(event, time.monotonic())
-        except Exception as exc:  # noqa: BLE001 - propagate reader-thread failures to caller
+                try:
+                    if self.backend == "evdev":
+                        assert self.event_device is not None
+                        evdev_reader = EvdevReader(self.event_device)
+                        evdev_reader.open()
+                        poll_event = evdev_reader.poll_event
+                    else:
+                        spnav.open_connection()
+                        poll_event = spnav.poll_event
+                    connected = True
+                    self._ready.set()
+                    with self._lock:
+                        self._failure = None
+                        self._connected = True
+                    while not self._stop.is_set():
+                        event = poll_event()
+                        if event is None:
+                            time.sleep(self.poll_interval)
+                            continue
+                        self._handle_event(event, time.monotonic())
+                    break
+                except OSError as exc:
+                    # USB HID devices can disappear during a bus reset. Keep
+                    # the public state safe (zero motion, released buttons),
+                    # close the stale fd, and reconnect through the by-id path.
+                    reconnectable = exc.errno in {
+                        errno.ENODEV, errno.ENXIO, errno.EIO, errno.ENOENT
+                    }
+                    if not reconnectable or self.backend != "evdev":
+                        raise
+                    if evdev_reader is not None:
+                        evdev_reader.close()
+                        evdev_reader = None
+                    with self._lock:
+                        self._raw_motion.fill(0.0)
+                        self._buttons.clear()
+                        self._pending_button_states.clear()
+                        self._last_motion_time = 0.0
+                        self._last_button_time = 0.0
+                        self._connected = False
+                        self._reconnect_count += 1
+                    connected = False
+                    time.sleep(0.25)
+                finally:
+                    if evdev_reader is not None and not connected:
+                        evdev_reader.close()
+                        evdev_reader = None
+                    connected = False
+        except Exception as exc:
             with self._lock:
                 self._failure = exc
+                self._connected = False
             self._ready.set()
         finally:
-            if opened:
-                if evdev_reader is not None:
-                    evdev_reader.close()
-                else:
-                    spnav.close_connection()
+            if evdev_reader is not None:
+                evdev_reader.close()
+            if self.backend == "spnav":
+                spnav.close_connection()
+
+    def diagnostics(self) -> dict[str, int | float | bool | None | str]:
+        """Return input-level counters without consuming button transitions."""
+        with self._lock:
+            return {
+                "connected": self._connected,
+                "event_count": self._event_count,
+                "reconnect_count": self._reconnect_count,
+                "last_event_time": max(self._last_motion_time, self._last_button_time) or None,
+                "failure": str(self._failure) if self._failure is not None else None,
+            }

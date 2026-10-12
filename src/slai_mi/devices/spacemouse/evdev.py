@@ -49,7 +49,12 @@ class EvdevReader:
                 self._motion[code] = value
                 self._motion_seen = True
             elif event_type == EV_KEY:
-                self._events.append(spnav.SpnavButtonEvent(code, bool(value)))
+                # Linux evdev exposes BTN_0.. as 256+N, while the rest of
+                # this project (and spnav) uses the logical bnum N.
+                logical_bnum = code - 256 if code >= 256 else code
+                self._events.append(
+                    spnav.SpnavButtonEvent(logical_bnum, bool(value))
+                )
             elif event_type == EV_SYN and code == SYN_REPORT and self._motion_seen:
                 self._events.append(
                     spnav.SpnavMotionEvent(

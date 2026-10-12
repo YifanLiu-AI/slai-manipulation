@@ -6,6 +6,7 @@ import shutil
 import uuid
 from pathlib import Path
 
+from .configured import ConfiguredDatasetContract
 from .contract import validate_dataset_root, write_contract_manifest
 
 
@@ -14,6 +15,7 @@ def merge_vla_v3_datasets(
     target_root: Path,
     *,
     repo_id: str,
+    contract: ConfiguredDatasetContract | None = None,
 ) -> Path:
     """Merge independently recorded sessions into one training root."""
     sources = [path.resolve() for path in source_roots]
@@ -29,15 +31,19 @@ def merge_vla_v3_datasets(
     if target in sources:
         raise ValueError("target dataset must differ from every source dataset")
 
+    validate = contract.validate_root if contract is not None else validate_dataset_root
     for source in sources:
-        validate_dataset_root(source)
+        validate(source)
 
     target.parent.mkdir(parents=True, exist_ok=True)
     staging = target.parent / f".{target.name}.merge-{uuid.uuid4().hex}"
     try:
         _merge_with_lerobot(sources, staging, repo_id)
-        write_contract_manifest(staging)
-        validate_dataset_root(staging)
+        if contract is None:
+            write_contract_manifest(staging)
+        else:
+            contract.write_manifest(staging)
+        validate(staging)
         staging.replace(target)
     except BaseException:
         if staging.exists():

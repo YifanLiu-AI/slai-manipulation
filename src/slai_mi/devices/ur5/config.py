@@ -187,7 +187,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--task-start-file",
         type=Path,
         default=TASK_START_FILE_DEFAULT,
-        help="Task YAML defining the Button 4 UR5/Wuji zero and Wuji state 1",
+        help="Task YAML defining the T-key UR5/Wuji zero and Wuji state 1",
     )
     home.add_argument(
         "--home-command-socket",

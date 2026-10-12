@@ -14,7 +14,7 @@ from slai_mi.datasets.pi05 import (
     stage_episode,
     validate_pi05_source,
 )
-from slai_mi.datasets.pi05_native import validate_native_v30_stats
+from slai_mi.datasets.pi05_native import stabilize_training_quantiles, validate_native_v30_stats
 from slai_mi.evaluation.heldout import select_horizon_rows
 from slai_mi.input_schema import load_input_schema
 from slai_mi.training.lerobot_pi05 import build_lerobot_train_config, run_lerobot_train
@@ -135,6 +135,46 @@ def test_interleaved_v4_contract_is_not_silently_reinterpreted(tmp_path) -> None
         validate_pi05_source(root)
 
 
+def test_task2_gripper_contract_is_supported_by_pi05_source(tmp_path: Path) -> None:
+    root = tmp_path / "task2"
+    (root / "meta").mkdir(parents=True)
+    schema = load_input_schema("configs/input_schemas/ur5e_wrist_gripper_9dof.yaml")
+    features = {
+        "observation.images.d435_primary_rgb": {"shape": [480, 640, 3]},
+        "observation.images.d405_rgb": {"shape": [480, 640, 3]},
+        "observation.images.d435_secondary_rgb": {"shape": [480, 640, 3]},
+        "observation.state": {"shape": [9]},
+        "observation.tcp_pose": {"shape": [9]},
+        "action": {"shape": [9]},
+    }
+    (root / "meta/info.json").write_text(
+        json.dumps(
+            {
+                "codebase_version": "v3.0",
+                "fps": 30,
+                "features": features,
+                "total_episodes": 1,
+                "total_frames": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (root / "meta/robot_teleoperation_contract.json").write_text(
+        json.dumps(
+            {
+                "contract_id": (
+                    "robot_teleoperation.ur5_wrist_gripper."
+                    "three_rgb_cartesian_rot6d_columns.v1"
+                )
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = validate_pi05_source(root, schema)
+    assert result["state_dim"] == 12
+    assert result["action_dim"] == 9
+
+
 def test_heldout_sampling_never_crosses_episode_boundary() -> None:
     episodes = np.repeat(np.arange(2), 40)
     frames = np.tile(np.arange(40), 2)
@@ -249,8 +289,12 @@ def test_full_lerobot_training_uses_swanlab_entrypoint(tmp_path: Path, monkeypat
     (metadata / "stats.json").write_text(
         json.dumps(
             {
-                "observation.state": {"q01": [0.0], "q99": [1.0]},
-                "action": {"q01": [0.0], "q99": [1.0]},
+                "observation.state": {
+                    "min": [0.0], "max": [1.0], "q01": [0.0], "q99": [1.0]
+                },
+                "action": {
+                    "min": [0.0], "max": [1.0], "q01": [0.0], "q99": [1.0]
+                },
             }
         ),
         encoding="utf-8",
@@ -289,22 +333,63 @@ def test_full_lerobot_training_uses_swanlab_entrypoint(tmp_path: Path, monkeypat
     ]
 
 
-def test_native_training_view_requires_quantile_stats(tmp_path: Path) -> None:
+def _safe_vector_stats() -> dict[str, list[float]]:
+    return {"min": [0.0], "max": [1.0], "q01": [0.0], "q99": [1.0]}
+
+
+def test_native_training_view_requires_safe_quantile_stats(tmp_path: Path) -> None:
     metadata = tmp_path / "meta"
     metadata.mkdir()
     (metadata / "stats.json").write_text(
         json.dumps(
             {
-                "observation.state": {"q01": [0.0], "q99": [1.0]},
-                "action": {"q01": [0.0], "q99": [1.0]},
+                "observation.state": _safe_vector_stats(),
+                "action": _safe_vector_stats(),
             }
         ),
         encoding="utf-8",
     )
     validate_native_v30_stats(tmp_path)
     (metadata / "stats.json").write_text(
-        json.dumps({"observation.state": {"q01": [0], "q99": [1]}, "action": {"q01": [0]}}),
+        json.dumps(
+            {
+                "observation.state": _safe_vector_stats(),
+                "action": {"min": [0.0], "max": [1.0], "q01": [0.0]},
+            }
+        ),
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="action stats are missing: q99"):
         validate_native_v30_stats(tmp_path)
+
+
+def test_dangerous_action_quantile_is_repaired_and_replayable(tmp_path: Path) -> None:
+    stats = {
+        "observation.state": _safe_vector_stats(),
+        "action": {
+            "min": [-0.219239994884, 0.0],
+            "max": [0.0, 0.0],
+            "q01": [-4.36410953032e-05, 0.0],
+            "q99": [-4.40797537087e-07, 0.0],
+        },
+    }
+    metadata = tmp_path / "meta"
+    metadata.mkdir()
+    path = metadata / "stats.json"
+    path.write_text(json.dumps(stats), encoding="utf-8")
+    with pytest.raises(ValueError, match=r"action quantile normalization.*dim 0"):
+        validate_native_v30_stats(tmp_path)
+
+    repairs = stabilize_training_quantiles(stats)
+    assert repairs == [
+        {
+            "feature": "action",
+            "dimension": 0,
+            "old_q01": -4.36410953032e-05,
+            "old_q99": -4.40797537087e-07,
+            "normalized_min": pytest.approx(-9919.3202316),
+            "normalized_max": pytest.approx(0.9746968916),
+        }
+    ]
+    path.write_text(json.dumps(stats, default=lambda value: value.tolist()), encoding="utf-8")
+    validate_native_v30_stats(tmp_path)

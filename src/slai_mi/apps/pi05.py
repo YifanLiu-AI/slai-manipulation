@@ -138,6 +138,12 @@ def main(argv: list[str] | None = None) -> int:
                 else _latest_source(loaded["dataset"]["input_schema"])
             )
             loaded, generated = _all_config(loaded, source, args.run_id)
+            if args.steps is not None:
+                loaded["training"]["steps"] = args.steps
+            if args.batch_size is not None:
+                loaded["training"]["batch_size"] = args.batch_size
+            if args.experiment is not None:
+                loaded["training"]["experiment"] = args.experiment
             print(
                 json.dumps(
                     {

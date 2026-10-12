@@ -188,7 +188,7 @@ def configuration_messages(config: UR5TeleopConfig) -> list[str]:
     return [
         (
             "Controls: cap=XYZ; hold Shift=TCP-local rotation; "
-            "Button 1/2=wrist_3 clockwise/counterclockwise; hold Button 4=return to zero."
+            "Button 1/2=wrist_3 clockwise/counterclockwise; hold T=return to zero."
         ),
         "XYZ and TCP rotation are isolated to suppress cross-axis motion.",
         (
@@ -202,7 +202,7 @@ def configuration_messages(config: UR5TeleopConfig) -> list[str]:
             f"{config.speeds.boost_rotation:.2f} rad/s."
         ),
         (
-            "Button 4 home maxima="
+            "T home maxima="
             f"{config.home_translation_speed * 1000.0:.1f} mm/s,"
             f"{config.home_rotation_speed:.2f} rad/s; release stops physical home."
         ),
@@ -260,7 +260,7 @@ class UR5TeleopRuntime:
                 f"tcp={_rounded_pose(checked_pose)}"
             )
             emit(
-                "Button 4 task zero loaded: "
+                "T task zero loaded: "
                 f"task={task_start.task_id} path={task_start.path} "
                 f"q={_rounded_pose(zero_joints)}"
             )
@@ -404,7 +404,7 @@ class UR5TeleopRuntime:
             ):
                 self.dependencies.emit("SpaceMouse input window closed; stopping.")
                 break
-            home_pressed = bool(buttons.get(int(Button.HOME), False))
+            home_pressed = bool(buttons.get(int(Button.T), False))
             cap_active = bool(np.any(np.abs(motion) > 0.0))
             home_available = zero_joints is not None or zero_pose is not None
             if home_receiver is not None and home_receiver.poll():
@@ -418,16 +418,16 @@ class UR5TeleopRuntime:
             if home_pressed and not home_pressed_last:
                 if not home_available:
                     self.dependencies.emit(
-                        f"Button 4 ignored: record a zero pose at {config.zero_pose_file}"
+                        f"T ignored: record a zero pose at {config.zero_pose_file}"
                     )
                 elif cap_active:
-                    self.dependencies.emit("Button 4 ignored: center the SpaceMouse cap first.")
+                    self.dependencies.emit("T ignored: center the SpaceMouse cap first.")
                 elif wrist_buttons_pressed:
-                    self.dependencies.emit("Button 4 ignored: release Button 1 and 2 first.")
+                    self.dependencies.emit("T ignored: release Button 1 and 2 first.")
                 else:
-                    self.dependencies.emit("Button 4 home started; release Button 4 to stop.")
+                    self.dependencies.emit("T home started; release T to stop.")
             elif not home_pressed and home_pressed_last and not remote_home_active:
-                self.dependencies.emit("Button 4 released; hold position.")
+                self.dependencies.emit("T released; hold position.")
             home_pressed_last = home_pressed
 
             if remote_home_active and cap_active:
@@ -477,7 +477,7 @@ class UR5TeleopRuntime:
                     predicted_joints = current_joints + joint_velocity * horizon_s
                     if not control.isJointsWithinSafetyLimits(predicted_joints.tolist()):
                         joint_velocity[:] = 0.0
-                        boundary = "Button 4 joint safety limit"
+                        boundary = "T joint safety limit"
                 twist = np.zeros(6, dtype=np.float64)
                 if reached:
                     remote_home_active = False

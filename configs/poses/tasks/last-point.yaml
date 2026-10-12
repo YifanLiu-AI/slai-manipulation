@@ -1,0 +1,21 @@
+schema_version: 1
+name: last-point
+kind: task_start
+configured: true
+units: rad
+schema_ref: ../../input_schemas/ur5e_wrist_gripper_9dof_continuous.yaml
+joint_names: [shoulder_pan_joint, shoulder_lift_joint, elbow_joint, wrist_1_joint, wrist_2_joint, wrist_3_joint, wrist_pitch_joint, wrist_yaw_joint, gripper_joint]
+joint_positions: [3.2988367080688477, -1.3855517546283167, -1.6734727064715784, -1.6501811186419886, 1.5775959491729736, -1.0311530272113245, 0.0, 0.0, 0.0]
+provenance:
+  source: read_only_hardware_snapshot
+  captured_at_local: "2026-08-28T03:21:00+08:00"
+  parent_pose: task2_continuous_start.yaml
+  allocation_contract:
+    ur5_6dof: [0, 1, 2, 3, 4, 5]
+    wrist_2dof: [6, 7]
+    gripper_1dof: [8]
+  wrist_encoder_abs_deg: [87.58, 164.11]
+  wrist_relative_to_new_home_deg: [0.0, 0.0]
+  gripper_inheritance: copied_from_parent_pose
+  gripper_joint_position: 0.0
+  safety_note: UR5 and wrist use the captured physical position; gripper remains the parent pose open value.

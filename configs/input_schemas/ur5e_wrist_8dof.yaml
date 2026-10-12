@@ -93,7 +93,8 @@ synchronization:
   retain_s: 5.0
   clock_window: 180
   clock_slope_range: [0.98, 1.02]
-  max_camera_skew_ms: 20.0
+  # Three independent 30 fps RealSense clocks: tolerate up to three frames of phase drift.
+  max_camera_skew_ms: 100.0
   max_camera_age_ms: 100.0
   max_state_age_ms: 100.0
   max_command_age_ms: 250.0

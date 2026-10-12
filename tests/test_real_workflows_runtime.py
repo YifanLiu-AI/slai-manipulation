@@ -191,14 +191,17 @@ def test_collection_saves_episode_and_finalizes_all_resources() -> None:
     assert events[-1] == "ur5-close"
 
 
-def test_three_menu_fit_cycles_exit_continuous_collection_without_an_episode() -> None:
+def test_three_menu_fit_cycles_start_then_exit_continuous_collection() -> None:
     events: list[str] = []
     chord = {0: True, 1: True}
 
     class Mouse:
         def __init__(self):
             # The held startup chord is ignored until both buttons are released.
-            self.states = [chord, {}, chord, {}, chord, {}, chord]
+            self.states = [
+                chord, {}, chord, {}, chord, {}, chord,
+                {}, chord, {}, chord, {}, chord,
+            ]
 
         def state(self):
             return (), self.states.pop(0)
@@ -222,8 +225,9 @@ def test_three_menu_fit_cycles_exit_continuous_collection_without_an_episode() -
             return None
 
     class Recorder:
-        def record(self, _stop):
-            raise AssertionError("exit gesture must not start recording")
+        def record(self, stop):
+            while not stop.is_set():
+                pass
 
     dependencies = CollectionDependencies(
         ur5_factory=lambda _config: resource(),
@@ -476,6 +480,9 @@ class _HomeMouse:
     def home_status(self) -> dict[str, object]:
         return {"at_home": self.at_home, "detail": "test home status"}
 
+    def consume_external_home_request(self) -> bool:
+        return False
+
 
 def _home_collection_workflow(
     mouse: _HomeMouse,
@@ -483,6 +490,7 @@ def _home_collection_workflow(
     *,
     frame_counts: list[int] | None = None,
     episode_limit: int | None = 1,
+    idle_camera_timeouts: int = 0,
 ) -> RealCollectionWorkflow:
     @contextmanager
     def resource(value=None):
@@ -499,8 +507,15 @@ def _home_collection_workflow(
             events.append("finalize")
 
     class Synchronizer:
+        def __init__(self) -> None:
+            self.idle_reads = 0
+
         def read(self, timeout_s=1.0):
             events.append(f"sync:{timeout_s}")
+            if timeout_s == 0.25:
+                self.idle_reads += 1
+                if self.idle_reads <= idle_camera_timeouts:
+                    raise TimeoutError("transient camera phase miss")
             return object()
 
     class Recorder:
@@ -535,6 +550,27 @@ def _home_collection_workflow(
     )
 
 
+def test_idle_fit_requests_coordinated_home_without_recording() -> None:
+    events: list[str] = []
+    mouse = _HomeMouse(
+        [
+            {},  # Initial supervised state and input synchronization.
+            {},  # Initial home completes.
+            {1: True},  # Idle Fit requests a coordinated home.
+            {},  # Fit home completes; remain idle.
+            {26: True},  # LOCK exits without recording.
+        ]
+    )
+
+    workflow = _home_collection_workflow(mouse, events, episode_limit=None)
+    assert workflow.run() == 0
+    assert mouse.home_requests == 2
+    assert mouse.home_clears == 2
+    assert not any(event.startswith("record:") for event in events)
+    assert "save" not in events
+    assert mouse.states == []
+
+
 def test_collection_save_waits_for_final_home_before_exit() -> None:
     events: list[str] = []
     mouse = _HomeMouse(
@@ -559,16 +595,45 @@ def test_collection_save_waits_for_final_home_before_exit() -> None:
     assert workflow.run() == 1
     assert events.count("record:1") == 1
     assert events.count("save") == 1
-    assert mouse.home_requests == 2
-    assert mouse.home_clears == 2
+    # Initial HOME + fresh pre-Episode HOME + post-Fit HOME.
+    assert mouse.home_requests == 3
+    assert mouse.home_clears == 3
     assert mouse.states == []
     assert events.index("save") > max(
         index for index, event in enumerate(events) if event == "home-clear"
     )
-    assert events.index("record-stop:1") < max(
+    final_home_clear = max(
         index for index, event in enumerate(events) if event == "home-clear"
     )
-    assert events.index("record-stop:1") < events.index("save")
+    # Fit does not stop the data window. HOME telemetry remains in the active
+    # Episode, and only HOME completion stops and commits the recorder.
+    assert final_home_clear < events.index("record-stop:1") < events.index("save")
+
+
+def test_low_level_home_discards_active_episode_before_homing() -> None:
+    events: list[str] = []
+
+    class Mouse(_HomeMouse):
+        def __init__(self) -> None:
+            super().__init__([{}, {}, {0: True}, {}, {}, {26: True}])
+            self.calls = 0
+
+        def consume_external_home_request(self) -> bool:
+            self.calls += 1
+            return self.calls == 4
+
+    mouse = Mouse()
+    workflow = _home_collection_workflow(mouse, events, episode_limit=None)
+
+    assert workflow.run() == 0
+    assert events.count("record:1") == 1
+    assert events.count("record-stop:1") == 1
+    # One clear is the immediate HOME preemption; finalization defensively
+    # clears the already-empty buffer once more.
+    assert events.count("clear") == 2
+    assert events.index("record-stop:1") < events.index("clear")
+    assert "save" not in events
+    assert mouse.home_requests == 3
 
 
 def test_collection_lock_during_post_fit_home_does_not_save_episode() -> None:
@@ -577,7 +642,7 @@ def test_collection_lock_during_post_fit_home_does_not_save_episode() -> None:
     class Mouse(_HomeMouse):
         def home_status(self) -> dict[str, object]:
             return {
-                "at_home": self.home_requests < 2,
+                "at_home": self.home_requests < 3,
                 "detail": "returning after Fit",
             }
 
@@ -588,7 +653,7 @@ def test_collection_lock_during_post_fit_home_does_not_save_episode() -> None:
     assert "save" not in events
     assert events.count("clear") == 1
     assert events[-1] == "finalize"
-    assert mouse.home_requests == 2
+    assert mouse.home_requests == 3
 
 
 def test_collection_lock_after_post_fit_home_saves_before_finalizing() -> None:
@@ -599,7 +664,7 @@ def test_collection_lock_after_post_fit_home_saves_before_finalizing() -> None:
     assert workflow.run() == 1
     assert events.count("save") == 1
     assert events.index("save") < events.index("finalize")
-    assert mouse.home_requests == 2
+    assert mouse.home_requests == 3
 
 
 def test_collection_post_fit_home_timeout_discards_without_saving(monkeypatch) -> None:
@@ -610,7 +675,7 @@ def test_collection_post_fit_home_timeout_discards_without_saving(monkeypatch) -
     class Mouse(_HomeMouse):
         def home_status(self) -> dict[str, object]:
             return {
-                "at_home": self.home_requests < 2,
+                "at_home": self.home_requests < 3,
                 "detail": "post-Fit home timeout",
             }
 
@@ -654,9 +719,54 @@ def test_continuous_collection_saves_each_episode_only_after_home() -> None:
     assert events.count("save") == 2
     save_indexes = [index for index, event in enumerate(events) if event == "save"]
     home_indexes = [index for index, event in enumerate(events) if event == "home-clear"]
-    assert home_indexes[1] < save_indexes[0] < home_indexes[2] < save_indexes[1]
-    assert mouse.home_requests == 3
+    # Initial HOME, then a distinct HOME immediately before and after every
+    # Episode. Episode 2 must not inherit Episode 1's completed HOME state.
+    assert len(home_indexes) == 5
+    assert home_indexes[1] < events.index("record:1") < home_indexes[2] < save_indexes[0]
+    assert home_indexes[3] < events.index("record:2") < home_indexes[4] < save_indexes[1]
+    assert mouse.home_requests == 5
     assert events[-1] == "finalize"
+
+
+def test_continuous_collection_homes_before_all_99_episode_starts() -> None:
+    events: list[str] = []
+    states: list[dict[int, bool]] = [
+        {},  # Initial supervised synchronization.
+        {},  # Initial HOME completes.
+    ]
+    for _episode in range(99):
+        states.extend(
+            [
+                {0: True},  # Menu requests the next Episode.
+                {},  # Its fresh pre-Episode HOME completes; recording starts.
+                {1: True},  # Fit requests the post-Episode HOME.
+                {},  # HOME completes; the Episode is saved.
+            ]
+        )
+
+    mouse = _HomeMouse(states)
+    clear_home = mouse.clear_home
+
+    def observed_clear_home() -> None:
+        events.append("home-clear")
+        clear_home()
+
+    mouse.clear_home = observed_clear_home
+    workflow = _home_collection_workflow(mouse, events, episode_limit=99)
+
+    assert workflow.run() == 99
+    assert mouse.states == []
+    assert mouse.home_requests == 199  # Initial HOME + two HOMEs per Episode.
+    assert mouse.home_clears == 199
+    assert events.count("save") == 99
+    home_indexes = [index for index, event in enumerate(events) if event == "home-clear"]
+    save_indexes = [index for index, event in enumerate(events) if event == "save"]
+    for episode in range(1, 100):
+        pre_home = home_indexes[2 * episode - 1]
+        post_home = home_indexes[2 * episode]
+        record = events.index(f"record:{episode}")
+        save = save_indexes[episode - 1]
+        assert pre_home < record < post_home < save
 
 
 def test_collection_discard_homes_then_waits_for_menu() -> None:
@@ -683,8 +793,9 @@ def test_collection_discard_homes_then_waits_for_menu() -> None:
     assert events.count("record:2") == 1
     assert events.count("save") == 1
     assert events.count("clear") == 2  # Operator discard plus final cleanup.
-    assert mouse.home_requests == 3
-    assert mouse.home_clears == 3
+    # Initial + pre-attempt 1 + discard + pre-attempt 2 + save.
+    assert mouse.home_requests == 5
+    assert mouse.home_clears == 5
 
 
 def test_collection_discard_never_restarts_without_another_menu() -> None:
@@ -722,8 +833,9 @@ def test_collection_zero_frame_fit_discards_homes_then_waits_for_menu() -> None:
     assert events.count("record:2") == 1
     assert events.count("save") == 1
     assert events.count("clear") == 2
-    assert mouse.home_requests == 3
-    assert mouse.home_clears == 3
+    # Initial + pre-attempt 1 + zero-frame Fit + pre-attempt 2 + save.
+    assert mouse.home_requests == 5
+    assert mouse.home_clears == 5
 
 
 def test_collection_zero_frame_discard_never_restarts_without_menu() -> None:
@@ -746,6 +858,16 @@ def test_collection_rotation_lock_finalizes_without_saving_active_episode() -> N
     assert events.count("record:1") == 1
     assert "save" not in events
     assert events.count("clear") == 1
+    assert events[-1] == "finalize"
+
+
+def test_collection_transient_idle_camera_timeout_retries_instead_of_exiting() -> None:
+    events: list[str] = []
+    mouse = _HomeMouse([{}, {}, {}, {26: True}])
+
+    workflow = _home_collection_workflow(mouse, events, idle_camera_timeouts=1)
+    assert workflow.run() == 0
+    assert events.count("sync:0.25") == 2
     assert events[-1] == "finalize"
 
 

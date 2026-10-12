@@ -1,0 +1,18 @@
+schema_version: 1
+name: task2_start
+kind: task_start
+configured: true
+units: rad
+schema_ref: ../../input_schemas/ur5e_wrist_gripper_9dof.yaml
+joint_names: [shoulder_pan_joint, shoulder_lift_joint, elbow_joint, wrist_1_joint, wrist_2_joint, wrist_3_joint, wrist_pitch_joint, wrist_yaw_joint, gripper_joint]
+joint_positions: [3.2977943420410156, -1.5669592062579554, -0.9337509314166468, -2.2119277159320276, 1.5755716562271118, -1.0345171133624476, 0.0, 0.0, 0.0]
+provenance:
+  source: live_read_only_hardware_snapshot
+  captured_at_unix_s: 1787577656.5072474
+  captured_at_monotonic_s: 103933.904504278
+  record_type: task2_current_pose_9dof
+  safety_note: Current pose was read without HOME or movement commands. This is a task pose reference, not a verified mechanical zero.
+  wrist_absolute_encoder_deg: [64.93, 164.88]
+  wrist_configured_zero_deg: [64.93, 164.88]
+  gripper_position_raw: 100
+  gripper_binary_state: 0

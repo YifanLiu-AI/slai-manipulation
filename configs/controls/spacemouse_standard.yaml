@@ -7,14 +7,17 @@ motion:
   control_hz: 125
   acceleration: 0.50
   wrist_3_jog_speed: 0.20
-  home_joint_speed: 0.60
+  # Keep routine HOME below the UR5 worker's 0.60 rad/s fail-closed ceiling.
+  home_joint_speed: 0.50
   # Zero disables the obsolete startup-relative workspace envelopes.
   max_offset_mm: 0.0
   max_rotation_deg: 0.0
-  translation_speed: 0.080
-  rotation_speed: 0.45
-  precision_translation_speed: 0.25
-  precision_rotation_speed: 0.60
+  translation_speed: 0.107
+  # Retain 10% headroom below the worker's 0.60 rad/s hard ceiling.
+  rotation_speed: 0.54
+  # Boost also retains 10% command headroom below hardware hard limits.
+  precision_translation_speed: 0.225
+  precision_rotation_speed: 0.54
   deadzone: 0.12
 hand:
   command_hz: 30
@@ -33,6 +36,8 @@ bindings:
   esc: discard_episode_and_home
   button_1: wrist_3_jog_clockwise
   button_2: wrist_3_jog_counterclockwise
-  button_3: hand_grasp_hold_or_open_double_press
-  button_4: robot_home
+  button_3: gripper_close_continuous_while_held
+  button_4: gripper_open_continuous_while_held
+  t: robot_home
+  r: wrist_home_only
   ctrl_c: finalize_dataset

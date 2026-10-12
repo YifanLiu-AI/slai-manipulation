@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import subprocess
 import sys
 import threading
 import time
+from contextlib import contextmanager
+from collections.abc import Iterator
 
 import numpy as np
 
@@ -22,9 +25,55 @@ from slai_mi.input_schema import (
     enabled_cameras,
     load_input_schema,
     select_transformed_vector,
+    split_capture_vector,
 )
 from slai_mi.runtime.real_workflows import _SignalStop, validate_real_hardware_config
-from slai_mi.site_adapter import RealPolicyBridge, StationSession, _cameras
+from slai_mi.site_adapter import UR5OnlySession, _cameras
+from slai_mi.devices.gripper import HiwonderGripper
+from slai_mi.devices.wrist_sensor.teleop import WristMasterSlaveController
+from slai_mi.devices.ur5.geometry import apply_relative_workspace_guard
+
+CAMERA_OCCUPANCY_SERVICE = "slai-collection-ui.service"
+
+
+@contextmanager
+def _pause_camera_occupancy_service() -> Iterator[None]:
+    """Release the shared RealSense devices and restore the prior UI state."""
+    probe = subprocess.run(
+        ["systemctl", "--user", "is-active", "--quiet", CAMERA_OCCUPANCY_SERVICE],
+        check=False,
+    )
+    if probe.returncode not in (0, 3):
+        raise RuntimeError(
+            f"could not inspect {CAMERA_OCCUPANCY_SERVICE}: exit {probe.returncode}"
+        )
+    was_active = probe.returncode == 0
+    if was_active:
+        subprocess.run(
+            ["systemctl", "--user", "stop", CAMERA_OCCUPANCY_SERVICE],
+            check=True,
+        )
+        # systemctl stop is synchronous, but give camera backends a short time
+        # to close their V4L/RealSense handles before the next pipeline.start().
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            state = subprocess.run(
+                ["systemctl", "--user", "is-active", "--quiet", CAMERA_OCCUPANCY_SERVICE],
+                check=False,
+            )
+            if state.returncode == 3:
+                break
+            time.sleep(0.05)
+        else:
+            raise RuntimeError(f"{CAMERA_OCCUPANCY_SERVICE} did not stop")
+    try:
+        yield
+    finally:
+        if was_active:
+            subprocess.run(
+                ["systemctl", "--user", "start", CAMERA_OCCUPANCY_SERVICE],
+                check=True,
+            )
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -67,13 +116,76 @@ def _observation(schema, frames, ur5, hand, prompt, torch):
     return batch
 
 
-def _at_home(session: StationSession) -> bool:
+def _at_home(session: UR5OnlySession, wrist, gripper) -> bool:
     arm = np.asarray(session.read_ur5_state()["joints"], dtype=float)
-    hand = np.asarray(session.read_wuji_positions(), dtype=float)
+    wrist_status = wrist.home_status()
+    gripper_state = gripper.read_state()
     return bool(
         np.max(np.abs(arm - session.ur5_home_joints)) <= 0.010
-        and np.max(np.abs(hand - session.wuji_home_joints)) <= 0.100
+        and bool(wrist_status.get("at_home"))
+        and gripper_state.binary_state == 0
     )
+
+
+class Task2PolicyBridge:
+    """Apply the schema's 9D action to UR5, OpenRB wrist, and gripper."""
+
+    def __init__(self, session: UR5OnlySession, wrist, gripper, schema) -> None:
+        self.session = session
+        self.wrist = wrist
+        self.gripper = gripper
+        self.schema = schema
+        self.start_pose: np.ndarray | None = None
+        self._last_gripper: int | None = None
+
+    def apply(self, action: object) -> None:
+        components = split_capture_vector(self.schema, "action", action)
+        try:
+            twist = np.asarray(components["ur5"]["target_tcp_speed"], dtype=float)
+            wrist_target = np.asarray(components["wrist"]["target_q"], dtype=float)
+            gripper_target = float(components["gripper"]["target_q"][0])
+        except KeyError as exc:
+            raise ValueError(f"TASK2 action schema is missing component: {exc}") from exc
+        if twist.shape != (6,) or wrist_target.shape != (2,):
+            raise ValueError("TASK2 action must contain UR5 6D and wrist 2D actions")
+        if not np.isfinite(twist).all() or not np.isfinite(wrist_target).all():
+            raise ValueError("TASK2 action contains non-finite values")
+        for values, limit in (
+            (twist[:3], self.session.speed_settings.translation),
+            (twist[3:], self.session.speed_settings.rotation),
+        ):
+            magnitude = float(np.linalg.norm(values))
+            if magnitude > limit:
+                values *= limit / magnitude
+        state = self.session.read_ur5_state()
+        current_pose = np.asarray(state["tcp_pose"], dtype=float)
+        if self.start_pose is None:
+            self.start_pose = current_pose.copy()
+        twist, _ = apply_relative_workspace_guard(
+            twist,
+            current_pose,
+            self.start_pose,
+            self.session.max_offset_m,
+            self.session.max_rotation_rad,
+            0.25,
+        )
+        self.session.write_ur5_twist(
+            twist,
+            acceleration=self.session.ur5_acceleration,
+            duration_s=self.session.control_period_s,
+        )
+        self.wrist.set_policy_target(wrist_target)
+        command = int(float(np.clip(gripper_target, 0.0, 1.0)) >= 0.5)
+        command_changed = command != self._last_gripper
+        if command_changed:
+            self.gripper.command(command)
+            self._last_gripper = command
+        self.session.check()
+        return {
+            "gripper_action": gripper_target,
+            "gripper_command": command,
+            "gripper_command_changed": command_changed,
+        }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -110,8 +222,27 @@ def main(argv: list[str] | None = None) -> int:
 
     from slai_mi.policies.pi05_lerobot import PI05Policy
 
-    validate_real_hardware_config(hardware, required=("ur5", "wujihand", "cameras"))
-    session = StationSession(hardware, task)
+    validate_real_hardware_config(
+        hardware, required=("ur5", "wrist_sensor", "gripper", "cameras")
+    )
+    session = UR5OnlySession(hardware, task)
+    wrist_config = hardware["wrist_sensor"]
+    wrist = WristMasterSlaveController(
+        project_path(wrist_config["config"]),
+        teleop_port=str(wrist_config.get("teleop_port", "auto")),
+        openrb_port=str(wrist_config.get("openrb_port", "auto")),
+        baud=int(wrist_config.get("baud", 115200)),
+    )
+    gripper_config = hardware["gripper"]
+    gripper = HiwonderGripper(
+        str(gripper_config["port"]),
+        servo_id=int(gripper_config.get("servo_id", 1)),
+        baud=int(gripper_config.get("baud", 115200)),
+        move_time_ms=int(gripper_config.get("move_time_ms", 1000)),
+        max_temperature_c=int(gripper_config.get("max_temperature_c", 60)),
+        binary_threshold=int(gripper_config.get("binary_threshold", 500)),
+        open_unload_delay_s=float(gripper_config.get("open_unload_delay_s", 1.5)),
+    )
     schema = load_input_schema(config.get("input_schema"))
     dataset = config["dataset"]
     dataset["root"] = str(project_path(dataset["root"]))
@@ -123,10 +254,21 @@ def main(argv: list[str] | None = None) -> int:
     period = 1.0 / int(schema["pi05"]["fps"])
     stop = threading.Event()
     completed = 0
-    with _cameras(hardware) as cameras, session.lease(arm=False), _SignalStop(stop):
-        if not _at_home(session):
-            raise RuntimeError("robot is not at the commissioned task start pose; hardware stayed unarmed")
-        bridge = RealPolicyBridge(session, config.get("input_schema"))
+    with (
+        _pause_camera_occupancy_service(),
+        _cameras(hardware) as cameras,
+        session.lease(arm=False),
+        wrist,
+        gripper,
+        _SignalStop(stop),
+    ):
+        gripper.command(0)
+        if not _at_home(session, wrist, gripper):
+            raise RuntimeError(
+                "TASK2 robot is not at the commissioned start pose; hardware stayed unarmed"
+            )
+        wrist.request_resume()
+        bridge = Task2PolicyBridge(session, wrist, gripper, schema)
         while not stop.is_set() and (steps == 0 or completed < steps):
             started = time.monotonic()
             frames = cameras.read(timeout_s=1.0)
@@ -134,7 +276,12 @@ def main(argv: list[str] | None = None) -> int:
                 schema,
                 frames,
                 session.read_ur5_state(),
-                session.read_wuji_positions(),
+                np.concatenate(
+                    (
+                        wrist.state().actual_q,
+                        np.asarray([gripper.read_state().actual_q[0]], dtype=np.float32),
+                    )
+                ),
                 prompt,
                 policy.torch,
             )
@@ -149,13 +296,23 @@ def main(argv: list[str] | None = None) -> int:
             if not session.supervisor.armed:
                 session.prepare_ur5_control()
                 session.arm()
-            bridge.apply(action)
+            gripper_event = bridge.apply(action)
+            if gripper_event["gripper_command_changed"]:
+                gripper_state = gripper.read_state()
+                print(
+                    f"step={completed} gripper_action={gripper_event['gripper_action']:.3f} "
+                    f"command={gripper_event['gripper_command']} "
+                    f"position={gripper_state.position} "
+                    f"actual={gripper_state.binary_state}"
+                , flush=True)
             completed += 1
             stop.wait(max(0.0, period - (time.monotonic() - started)))
         if session.supervisor.armed:
             session.write_ur5_twist(
                 np.zeros(6), acceleration=session.ur5_acceleration, duration_s=period
             )
+        wrist.clear_policy_target()
+        session.stop_ur5_motion()
     print_plan({"status": "complete", "steps": completed})
     return 0
 

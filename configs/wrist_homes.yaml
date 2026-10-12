@@ -1,0 +1,13 @@
+schema_version: 1
+name: task2_wrist_homes
+units: deg
+home1:
+  label: before_sync_current_position
+  enc0_abs_deg: 58.75
+  enc1_abs_deg: 166.35
+  source: rec_read_only_snapshot
+home2:
+  label: robowrist_20260825_commissioned_home
+  enc0_abs_deg: 52.77
+  enc1_abs_deg: 164.65
+  source: robowrist_commit_46fb43bd059cc699a7e40a5a4a765a577578d3ae

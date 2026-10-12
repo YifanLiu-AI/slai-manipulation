@@ -66,6 +66,21 @@ class FakeStatusProvider:
         return b"\xff\xd8fake-jpeg\xff\xd9"
 
 
+def test_standby_spacemouse_uses_same_spnav_backend_as_collection(monkeypatch) -> None:
+    captured = {}
+
+    def process(**kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr("slai_mi.ui.live_provider.SpaceMouseProcess", process)
+    LiveStatusProvider._new_mouse()
+
+    assert captured["backend"] == "spnav"
+    assert "event_device" not in captured
+    assert captured["rate_hz"] == 250.0
+
+
 def test_physical_gesture_requests_wrist_collection_service(monkeypatch) -> None:
     commands = []
 

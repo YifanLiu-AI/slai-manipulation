@@ -1,0 +1,37 @@
+schema_version: 1
+
+openpi_commit: 15a9616a00943ada6c20a0f158e3adb39df2ccac
+lerobot_v21_commit: 0cf864870cf29f4738d3ade893e6fd13fbd7cdb5
+
+dataset:
+  input_schema: configs/input_schemas/ur5e_wrist_gripper_9dof.yaml
+  source: data/lerobot/REPLACE_WITH_TASK2_DATASET
+  converted: data/training/pi05/task2_v21
+  repo_id: local/slai-task2-9dof-pi05
+  native_repo_id: local/slai-task2-9dof-pi05-native
+  native_v21: data/training/pi05/task2_9dof_native_v21
+  native_v30: data/training/pi05/task2_9dof_native_v30
+
+policy:
+  task_prompt: Pick up the object and place it in the target.
+
+training:
+  backend: lerobot_pytorch
+  experiment: task2_9dof_smoke
+  batch_size: 1
+  steps: 1
+  save_interval: 1000
+  seed: 42
+  base_checkpoint: data/models/pi05-base
+  base_checkpoint_dir: data/models/pi05-base
+  openpi_root: third_party/openpi
+  lerobot_v21_python: third_party/openpi/.venv/bin/python
+  lerobot_v3_python: .venv-lerobot-v3/bin/python
+  assets_dir: data/normalization/pi05_task2_9dof
+  checkpoints_dir: outputs/pi05
+  lerobot_train: .venv-lerobot-v3/bin/lerobot-train
+  generated_train_config: outputs/pi05/task2_9dof_smoke/train.yaml
+  training_output_dir: outputs/pi05/task2_9dof_full
+  smoke_output_dir: outputs/pi05/task2_9dof_smoke
+  output_repo_id: local/slai-task2-9dof-policy
+  lora_rank: 4

@@ -50,6 +50,17 @@ def test_history_uses_lerobot_metadata_and_event_journal(tmp_path: Path) -> None
     assert history["sessions"][1]["discarded"] is None
 
 
+def test_history_reports_public_2dof_and_3dof_aggregate_counts(tmp_path: Path) -> None:
+    last = tmp_path / "last"
+    _dataset(last, "task2-20260828T040000", 8)
+    _dataset(tmp_path / "aggregates", "task2-wrist-2dof", 3)
+    _dataset(tmp_path / "aggregates", "task2-no-wrist-motion", 5)
+
+    history = build_collection_history(last)
+
+    assert history["dof_counts"] == {"2DoF": 3, "3DoF": 5}
+
+
 def test_event_journal_keeps_complete_lines_when_threads_append(tmp_path: Path) -> None:
     dataset = _dataset(tmp_path, "task1-20260823T110000", 0)
     journal = CollectionEventJournal(dataset)

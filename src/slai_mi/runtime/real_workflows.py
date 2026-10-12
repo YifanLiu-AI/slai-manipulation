@@ -17,6 +17,20 @@ from slai_mi.devices.spacemouse.gestures import RepeatedChordGesture
 from slai_mi.input_schema import enabled_cameras, load_input_schema
 
 HOME_TIMEOUT_S = 30.0
+DOWNWARD_START_THRESHOLD_M_S = 1e-4
+SPACEMOUSE_DESCENT_DEADZONE = 0.12
+
+
+def _effective_downward_command(mouse: Any, motion: Sequence[float]) -> bool:
+    """True only when the controlled UR5 is receiving an effective downward command."""
+    commanded_twist = getattr(mouse, "commanded_twist", None)
+    if callable(commanded_twist):
+        twist = tuple(float(value) for value in commanded_twist())
+        return len(twist) == 6 and twist[2] < -DOWNWARD_START_THRESHOLD_M_S
+    # Dependency-injected workflow tests may use a plain SpaceMouse. Its XYZ
+    # mapping is direct, so apply the production deadzone before accepting Z.
+    values = tuple(float(value) for value in motion)
+    return len(values) == 6 and values[2] < -SPACEMOUSE_DESCENT_DEADZONE
 
 
 class StoppableRuntime(Protocol):
@@ -241,7 +255,7 @@ class RealCollectionWorkflow:
             controls = SpaceMouseEpisodeControls()
             cancel_gesture = RepeatedChordGesture(
                 (int(Button.MENU), int(Button.FIT)),
-                repeats=3,
+                repeats=2,
                 timeout_s=5.0,
                 require_initial_release=True,
             )
@@ -255,10 +269,12 @@ class RealCollectionWorkflow:
                 for name in ("request_home", "clear_home", "home_status")
             )
             homing = False
-            pending_auto_start = False
+            pending_descent_start = False
             pending_save = False
             pending_discard = False
             home_started_at: float | None = None
+            previous_buttons: dict[int, bool] = {}
+            motion_receipt_reported = False
 
             def limit_reached() -> bool:
                 return self.episode_limit is not None and saved >= self.episode_limit
@@ -268,6 +284,7 @@ class RealCollectionWorkflow:
                 if automatic:
                     controls.recording = True
                 attempts += 1
+                print(f"Episode started: index={saved + 1} attempt={attempts}", flush=True)
                 if dashboard is not None:
                     dashboard.provider.start_episode(index=saved + 1, attempt=attempts)
                     if automatic:
@@ -280,19 +297,30 @@ class RealCollectionWorkflow:
                 worker = _Worker("episode-recorder", recorder.record, active_stop, failures)
                 worker.thread.start()
 
-            def start_homing(message: str, *, auto_start: bool) -> None:
-                nonlocal homing, pending_auto_start, home_started_at
+            def start_homing(
+                message: str, *, auto_start: bool, preserve_gripper: bool = False
+            ) -> None:
+                nonlocal homing, pending_descent_start, home_started_at
                 if not supports_home:
                     return
                 controls.abort()
-                mouse.request_home()
+                request_preserving_home = getattr(
+                    mouse, "request_home_preserve_gripper", None
+                )
+                if preserve_gripper and callable(request_preserving_home):
+                    request_preserving_home()
+                else:
+                    mouse.request_home()
+                print(f"HOME requested: {message}", flush=True)
                 homing = True
-                pending_auto_start = auto_start
+                # Menu arms an Episode, but recording must not begin until HOME
+                # has completed and the first effective downward UR5 command occurs.
+                pending_descent_start = auto_start
                 home_started_at = time.monotonic()
                 if dashboard is not None:
                     dashboard.provider.set_phase(
                         "homing",
-                        "归零中（继续录制）" if pending_save else "归零中",
+                        "归零中（等待保存，已停止录制）" if pending_save else "归零中",
                         can_record=False,
                         recording=pending_save,
                     )
@@ -313,6 +341,32 @@ class RealCollectionWorkflow:
                 worker = None
                 return frame_count
 
+            def emergency_save_active_episode(reason: BaseException) -> None:
+                """Persist already-captured frames before fail-closed cleanup."""
+                nonlocal active_stop, worker, saved
+                if active_stop is None or worker is None:
+                    return
+                active_stop.set()
+                worker.thread.join(timeout=5.0)
+                if worker.thread.is_alive():
+                    return
+                frame_count = int(getattr(recorder, "frame_count", 0))
+                active_stop = None
+                worker = None
+                if frame_count <= 0:
+                    return
+                dataset.save_episode()
+                saved += 1
+                if dashboard is not None:
+                    dashboard.provider.finish_episode(
+                        "emergency", index=saved
+                    )
+                    dashboard.provider.event(
+                        f"已紧急保存中断 Episode {saved}（{type(reason).__name__}: {reason}）",
+                        level="error",
+                        code="emergency_save",
+                    )
+
             def finalize_from_lock() -> None:
                 if active_stop is not None and worker is not None:
                     stop_episode_recorder()
@@ -329,6 +383,32 @@ class RealCollectionWorkflow:
                         code="finalize",
                     )
 
+            idle_camera_timeouts = 0
+
+            def refresh_idle_inputs() -> None:
+                """Tolerate transient camera phase misses outside an Episode."""
+                nonlocal idle_camera_timeouts
+                try:
+                    synchronizer.read(timeout_s=0.25)
+                    idle_camera_timeouts = 0
+                except TimeoutError as exc:
+                    idle_camera_timeouts += 1
+                    if idle_camera_timeouts == 1:
+                        print(
+                            "Camera synchronization transient during idle/HOME; retrying",
+                            flush=True,
+                        )
+                        if dashboard is not None:
+                            dashboard.provider.event(
+                                "待机/回零阶段相机短暂不同步，正在自动重试",
+                                level="warning",
+                                code="camera_sync_retry",
+                            )
+                    if idle_camera_timeouts >= 20:
+                        raise RuntimeError(
+                            "camera synchronization unavailable for about 5 seconds"
+                        ) from exc
+
             try:
                 if dashboard is not None or supports_home:
                     # Arm through the normal supervised input boundary before the
@@ -337,6 +417,22 @@ class RealCollectionWorkflow:
                     controls.synchronize(initial_buttons)
                     if dashboard is not None:
                         dashboard.provider.observe_spacemouse(initial_motion, initial_buttons)
+                        diagnostics = getattr(mouse, "diagnostics", dict)()
+                        dashboard.provider.event(
+                            "采集控制循环已收到 SpaceMouse state "
+                            f"(packets={diagnostics.get('packet_count', '?')}, "
+                            f"samples={diagnostics.get('sample_count', '?')})",
+                            level="success",
+                            code="spacemouse_state_received",
+                        )
+                    diagnostics = getattr(mouse, "diagnostics", dict)()
+                    print(
+                        "SpaceMouse state reached collection loop: "
+                        f"packets={diagnostics.get('packet_count', '?')} "
+                        f"samples={diagnostics.get('sample_count', '?')} "
+                        f"events={diagnostics.get('event_count', '?')}",
+                        flush=True,
+                    )
                     synchronizer.read(timeout_s=5.0)
                 if supports_home:
                     start_homing("设备同步完成，正在自动归零", auto_start=False)
@@ -357,26 +453,96 @@ class RealCollectionWorkflow:
                     if limit_reached() and not homing and active_stop is None:
                         break
                     motion, buttons = mouse.state()
+                    consume_external_home = getattr(
+                        mouse, "consume_external_home_request", None
+                    )
+                    if callable(consume_external_home) and consume_external_home():
+                        interrupted_episode = active_stop is not None or pending_save
+                        if active_stop is not None:
+                            stop_episode_recorder()
+                        if interrupted_episode:
+                            dataset.clear_episode_buffer()
+                        pending_save = False
+                        pending_discard = interrupted_episode
+                        start_homing(
+                            "底层 Home 命令：已抢占当前控制并返回 TASK2 零位",
+                            auto_start=False,
+                        )
+                        print(
+                            "Low-level Home accepted; UR5, wrist, and gripper are homing",
+                            flush=True,
+                        )
+                        if dashboard is not None:
+                            dashboard.provider.event(
+                                "底层 Home 已执行；未完成的当前 Episode 已丢弃",
+                                level="warning" if interrupted_episode else "success",
+                                code="external_home",
+                            )
+                    if not motion_receipt_reported and any(
+                        abs(float(value)) > 0.0 for value in motion
+                    ):
+                        print(
+                            "SpaceMouse motion reached collection control loop: "
+                            f"motion={[round(float(value), 4) for value in motion]}",
+                            flush=True,
+                        )
+                        motion_receipt_reported = True
+                    for code, name in (
+                        (int(Button.MENU), "Menu"),
+                        (int(Button.FIT), "Fit"),
+                        (int(Button.CTRL), "Ctrl"),
+                        (int(Button.THREE), "3"),
+                        (int(Button.FOUR), "4"),
+                    ):
+                        if buttons.get(code, False) and not previous_buttons.get(code, False):
+                            print(f"SpaceMouse {name} detected", flush=True)
+                    previous_buttons = buttons.copy()
                     if dashboard is not None:
                         dashboard.provider.observe_spacemouse(motion, buttons)
                     if bool(any(abs(float(value)) > 0.0 for value in motion)):
                         cancel_gesture.reset()
                     elif cancel_gesture.update(buttons, time.monotonic()):
-                        finalize_from_lock()
-                        if dashboard is not None:
-                            dashboard.provider.event(
-                                "Menu + Fit 三次：退出数采并恢复待机网页",
-                                level="success",
-                                code="physical_collection_exit",
-                            )
-                        break
+                        # Menu+Fit double chord is a lifecycle toggle:
+                        # first use starts an episode; while recording it exits.
+                        if active_stop is None and not homing and not limit_reached():
+                            home = mouse.home_status() if supports_home else {
+                                "at_home": True,
+                                "detail": "",
+                            }
+                            if supports_home:
+                                # Every operator-started episode gets a fresh
+                                # coordinated HOME, including Episode 2+.
+                                # Being already at HOME is not a reason to skip
+                                # the request: the robot must re-enter the known
+                                # task start state before recording.
+                                start_homing(
+                                    f"Menu+Fit 双击：正在归零，准备开始 Episode {saved + 1}",
+                                    auto_start=True,
+                                )
+                            else:
+                                begin_episode(automatic=True)
+                            if dashboard is not None:
+                                dashboard.provider.event(
+                                    f"Menu+Fit 双击：开始 Episode {saved + 1} 采集",
+                                    level="success",
+                                    code="physical_collection_start",
+                                )
+                        elif active_stop is not None:
+                            finalize_from_lock()
+                            if dashboard is not None:
+                                dashboard.provider.event(
+                                    "Menu+Fit 双击：退出数采并恢复待机网页",
+                                    level="success",
+                                    code="physical_collection_exit",
+                                )
+                            break
                     home = mouse.home_status() if supports_home else {"at_home": True, "detail": ""}
                     if homing:
                         homing_action = controls.update(buttons)
                         controls.abort()
                         if bool(home.get("at_home")):
-                            frame_count = stop_episode_recorder() if pending_save else None
                             mouse.clear_home()
+                            frame_count = stop_episode_recorder() if pending_save else None
                             homing = False
                             home_started_at = None
                             if dashboard is not None:
@@ -385,6 +551,7 @@ class RealCollectionWorkflow:
                                     level="success",
                                     code="home_complete",
                                 )
+                            print("HOME complete; collection ready", flush=True)
                             if pending_save:
                                 if dashboard is not None:
                                     dashboard.provider.set_phase(
@@ -419,11 +586,21 @@ class RealCollectionWorkflow:
                             if homing_action is EpisodeAction.FINALIZE:
                                 finalize_from_lock()
                                 break
-                            if pending_auto_start and not limit_reached():
-                                pending_auto_start = False
-                                begin_episode(automatic=True)
+                            if pending_descent_start and not limit_reached():
+                                if dashboard is not None:
+                                    dashboard.provider.set_phase(
+                                        "armed",
+                                        "归零完成，等待首次下降后开始录制",
+                                        can_record=True,
+                                        recording=False,
+                                    )
+                                    dashboard.provider.event(
+                                        "Menu 已就绪；首次有效下降命令将启动 Episode",
+                                        level="success",
+                                        code="episode_armed_for_descent",
+                                    )
                             elif dashboard is not None:
-                                pending_auto_start = False
+                                pending_descent_start = False
                                 dashboard.provider.set_phase(
                                     "ready",
                                     "归零完成，按 Menu 开始",
@@ -439,11 +616,11 @@ class RealCollectionWorkflow:
                         ):
                             mouse.clear_home()
                             homing = False
-                            pending_auto_start = False
+                            pending_descent_start = False
                             home_started_at = None
                             if pending_save:
-                                stop_episode_recorder()
                                 dataset.clear_episode_buffer()
+                                stop_episode_recorder()
                                 pending_save = False
                                 if dashboard is not None:
                                     dashboard.provider.event(
@@ -465,10 +642,24 @@ class RealCollectionWorkflow:
                                     code="home_timeout",
                                 )
                         if active_stop is None:
-                            synchronizer.read(timeout_s=0.25)
+                            refresh_idle_inputs()
                         self.dependencies.sleep(0.005)
                         continue
 
+                    if (
+                        pending_descent_start
+                        and active_stop is None
+                        and not limit_reached()
+                        and _effective_downward_command(mouse, motion)
+                    ):
+                        pending_descent_start = False
+                        begin_episode(automatic=True)
+                        if dashboard is not None:
+                            dashboard.provider.event(
+                                "检测到首次有效下降；Episode 从当前帧开始录制",
+                                level="success",
+                                code="episode_started_on_descent",
+                            )
                     action = controls.update(buttons)
                     if (
                         supports_home
@@ -496,30 +687,31 @@ class RealCollectionWorkflow:
                         finalize_from_lock()
                         break
                     if action is EpisodeAction.START:
-                        if supports_home and not bool(home.get("at_home")):
-                            if dashboard is not None:
-                                dashboard.provider.set_phase(
-                                    "blocked",
-                                    "尚未回到零位，禁止录制",
-                                    can_record=False,
-                                    recording=False,
-                                )
+                        if supports_home:
+                            # Always home before a new episode. Do not use the
+                            # current at_home flag as a shortcut for Episode 2+.
                             start_homing(
-                                f"未回到零位，禁止开始 Episode {saved + 1}；正在自动归零",
+                                f"开始 Episode {saved + 1} 前正在自动归零",
                                 auto_start=True,
                             )
                         else:
                             begin_episode(automatic=False)
+                    elif action is EpisodeAction.HOME:
+                        if supports_home:
+                            start_homing("Fit：正在返回任务零位", auto_start=False)
                     elif action in {EpisodeAction.SAVE, EpisodeAction.DISCARD}:
                         if active_stop is None or worker is None:
                             raise RuntimeError("episode control changed without an active recorder")
                         if action is EpisodeAction.SAVE:
                             if supports_home:
+                                # Continue recording through the coordinated HOME.
+                                # The Episode is committed only after HOME feedback
+                                # confirms that every device reached the task start.
                                 pending_save = True
                                 start_homing(
-                                    f"Episode {saved + 1} 正在继续录制回零过程；"
-                                    "确认归零后停止并保存",
+                                    f"Episode {saved + 1} 已结束操作，正在保持夹爪状态并回零后保存",
                                     auto_start=False,
+                                    preserve_gripper=True,
                                 )
                             else:
                                 frame_count = stop_episode_recorder()
@@ -560,7 +752,7 @@ class RealCollectionWorkflow:
                                 if dashboard is not None:
                                     dashboard.provider.finish_episode("discard", index=saved + 1)
                     elif active_stop is None:
-                        synchronizer.read(timeout_s=0.25)
+                        refresh_idle_inputs()
                     self.dependencies.sleep(0.005)
                 if dashboard is not None:
                     dashboard.provider.set_phase(
@@ -570,6 +762,13 @@ class RealCollectionWorkflow:
                         f"已完成 {saved} 个 Episode", level="success", code="complete"
                     )
             except BaseException as exc:
+                # Safety failures must not discard frames already captured in
+                # the current Menu-to-Fit window. Save before the resource
+                # stack disables hardware and tears down the dataset.
+                try:
+                    emergency_save_active_episode(exc)
+                except BaseException as emergency_exc:  # noqa: BLE001 - preserve primary failure
+                    exc.add_note(f"emergency save failed: {emergency_exc}")
                 if dashboard is not None:
                     dashboard.provider.set_phase(
                         "error", "采集流程错误", can_record=False, recording=False

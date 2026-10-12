@@ -27,6 +27,25 @@ STATIC_ROOT = Path(__file__).with_name("static")
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
+def configured_dataset_root(
+    config_path: str | Path = "configs/dataset.yaml",
+) -> Path:
+    """Resolve dashboard history from the same root used by collection."""
+    candidate = Path(config_path).expanduser()
+    if not candidate.is_absolute():
+        candidate = PROJECT_ROOT / candidate
+    try:
+        payload = yaml.safe_load(candidate.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError) as exc:
+        raise RuntimeError(f"Unable to load dataset config {candidate}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise TypeError(f"Dataset config must contain a mapping: {candidate}")
+    root = Path(str(payload.get("root", "data/lerobot"))).expanduser()
+    if not root.is_absolute():
+        root = PROJECT_ROOT / root
+    return root.resolve()
+
+
 @runtime_checkable
 class StatusProvider(Protocol):
     """Read-only data source consumed by the dashboard.
@@ -112,7 +131,7 @@ class DashboardRuntime:
             if callable(provider_method):
                 return copy.deepcopy(provider_method())
             return build_collection_history(
-                PROJECT_ROOT / "data" / "lerobot",
+                configured_dataset_root(),
                 current_status=self._provider.status(),
             )
 
@@ -503,7 +522,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--spacemouse-collection-launch",
         action="store_true",
-        help="Start the wrist collection service after three physical Menu+Fit press cycles",
+        help="Start the wrist collection service after two physical Menu+Fit press cycles",
     )
     return parser
 

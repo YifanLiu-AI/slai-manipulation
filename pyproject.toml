@@ -24,6 +24,9 @@ pose-hub = [
     "uvicorn[standard]>=0.32",
     "websockets>=15",
 ]
+modelscope = [
+    "modelscope-hub==0.2.0",
+]
 
 [project.scripts]
 slai-teleop-real = "slai_mi.apps.teleop_real:main"
@@ -43,6 +46,11 @@ slai-pose-hub-bridge = "slai_mi.apps.pose_hub_bridge:main"
 slai-record-pose = "slai_mi.apps.record_pose:main"
 slai-wuji-retarget-check = "slai_mi.apps.check_wuji_retarget:main"
 slai-park-wrist = "slai_mi.apps.park_wrist:main"
+slai-task2-home = "slai_mi.apps.task2_home:main"
+slai-gripper = "slai_mi.apps.gripper:main"
+slai-task2-state = "slai_mi.apps.task2_state:main"
+slai-spacemouse-echo = "slai_mi.apps.spacemouse_echo:main"
+slai-modelscope = "slai_mi.apps.modelscope_transfer:main"
 slai-strategies = "slai_mi.apps.strategies:main"
 
 [dependency-groups]
