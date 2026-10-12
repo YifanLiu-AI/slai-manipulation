@@ -13,8 +13,20 @@ from slai_mi.devices.spacemouse.buttons import Button
 class SpaceMouseGripperControl:
     """Physical button 3 (bnum 14) closes; button 4 (bnum 15) opens."""
 
-    def __init__(self, gripper: Any) -> None:
+    def __init__(
+        self,
+        gripper: Any,
+        *,
+        debounce_s: float = 0.12,
+        monotonic: Any = time.monotonic,
+    ) -> None:
+        if not math.isfinite(debounce_s) or debounce_s < 0.0:
+            raise ValueError("debounce_s must be non-negative and finite")
         self.gripper = gripper
+        self.debounce_s = float(debounce_s)
+        self._monotonic = monotonic
+        self._last_command: int | None = None
+        self._last_command_s: float | None = None
         self._previous = {int(Button.THREE): False, int(Button.FOUR): False}
 
     def update(self, buttons: Mapping[int, bool]) -> int | None:
@@ -27,7 +39,16 @@ class SpaceMouseGripperControl:
             command = 0
         self._previous = {int(Button.THREE): three, int(Button.FOUR): four}
         if command is not None:
+            now = float(self._monotonic())
+            if (
+                command == self._last_command
+                and self._last_command_s is not None
+                and now - self._last_command_s < self.debounce_s
+            ):
+                return None
             self.gripper.command(command)
+            self._last_command = command
+            self._last_command_s = now
         return command
 
 
