@@ -67,14 +67,7 @@ def select_speed_limits(
     buttons: Mapping[int, bool],
     settings: SpeedSettings,
 ) -> SpeedLimits:
-    """Ctrl selects the high-speed profile without changing axis gating."""
-    if _pressed(buttons, Button.CTRL):
-        return SpeedLimits(
-            settings.boost_translation,
-            settings.boost_rotation,
-            SpeedProfile.BOOST,
-            False,
-        )
+    """Return the normal training profile; Ctrl is intentionally unmapped."""
     return SpeedLimits(
         settings.translation,
         settings.rotation,

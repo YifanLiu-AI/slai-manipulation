@@ -1,0 +1,11 @@
+schema_version: 1
+task:
+  id: block_into_box
+  instruction: Pick up the block and place it into the box.
+dataset_ref: ../dataset.yaml
+state_schema: real_v1
+control_profile_ref: ../controls/spacemouse_standard.yaml
+start_pose_ref: ../poses/tasks/remove_objects_from_box_20mm_start.yaml
+hand_presets:
+  open: ../poses/tasks/block_into_box_open.yaml
+  grasp: ../poses/tasks/block_into_box_grasp.yaml

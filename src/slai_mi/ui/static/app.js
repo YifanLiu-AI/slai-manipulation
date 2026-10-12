@@ -341,6 +341,9 @@ function renderCollectionHistory(history) {
   document.getElementById("metric-attempts").textContent = metricValue(summary.attempts);
   document.getElementById("metric-discarded").textContent = metricValue(summary.discarded);
   document.getElementById("metric-history-saved").textContent = metricValue(summary.history_saved);
+  const dofCounts = history.dof_counts || {};
+  document.getElementById("metric-2dof").textContent = metricValue(dofCounts["2DoF"] ?? 0);
+  document.getElementById("metric-3dof").textContent = metricValue(dofCounts["3DoF"] ?? 0);
 
   const list = document.querySelector(".history-list");
   const sessions = Array.isArray(history.sessions) ? history.sessions : [];

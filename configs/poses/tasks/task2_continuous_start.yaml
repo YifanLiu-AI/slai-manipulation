@@ -1,0 +1,15 @@
+schema_version: 1
+name: task2_continuous_start
+kind: task_start
+configured: true
+units: rad
+schema_ref: ../../input_schemas/ur5e_wrist_gripper_9dof_continuous.yaml
+joint_names: [shoulder_pan_joint, shoulder_lift_joint, elbow_joint, wrist_1_joint, wrist_2_joint, wrist_3_joint, wrist_pitch_joint, wrist_yaw_joint, gripper_joint]
+joint_positions: [3.2977943420410156, -1.5669592062579554, -0.9337509314166468, -2.2119277159320276, 1.5755716562271118, -1.0345171133624476, 0.0, 0.0, 0.0]
+provenance:
+  source: task2_start_continuous_contract_migration
+  safety_note: Same commissioned physical HOME as task2_start; gripper joint is normalized continuous position with 0=open.
+  gripper_command_open_raw: 630
+  gripper_feedback_open_raw: 649
+  gripper_feedback_bias_raw: 19
+  gripper_position_normalized: 0.0

@@ -22,16 +22,16 @@ def test_normalize_motion_applies_deadzone_and_z_up_transform() -> None:
     np.testing.assert_allclose(motion, [0.0, 1.0, 0.5, -0.5, -1.0, 0.0])
 
 
-def test_shift_isolates_base_rotation_and_ctrl_selects_boost() -> None:
+def test_ctrl_is_unmapped_and_shift_still_selects_rotation() -> None:
     settings = SpeedSettings()
     buttons = {int(Button.SHIFT): True, int(Button.CTRL): True}
     speed = select_speed_limits(buttons, settings)
     command = build_hardware_twist(np.ones(6), buttons, speed)
 
-    assert speed.profile is SpeedProfile.BOOST
+    assert speed.profile is SpeedProfile.TRAINING
     assert command.mode is MotionMode.ROTATION_BASE
     np.testing.assert_array_equal(command.twist[:3], np.zeros(3))
-    np.testing.assert_allclose(command.twist[3:], settings.boost_rotation)
+    np.testing.assert_allclose(command.twist[3:], settings.rotation / np.sqrt(3.0))
 
 
 def test_shift_preserves_diffusion_policy_transformed_rotation_axes() -> None:

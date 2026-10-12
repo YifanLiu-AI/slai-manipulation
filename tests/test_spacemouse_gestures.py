@@ -5,19 +5,17 @@ CHORD = {int(Button.MENU): True, int(Button.FIT): True}
 
 
 def test_three_menu_fit_press_cycles_trigger_once() -> None:
-    gesture = RepeatedChordGesture(CHORD, repeats=3, timeout_s=5.0)
+    gesture = RepeatedChordGesture(CHORD, repeats=2, timeout_s=5.0)
 
     assert not gesture.update(CHORD, 0.0)
     assert not gesture.update(CHORD, 0.1)
     assert not gesture.update({}, 0.2)
-    assert not gesture.update(CHORD, 0.3)
-    assert not gesture.update({}, 0.4)
-    assert gesture.update(CHORD, 0.5)
-    assert not gesture.update(CHORD, 0.6)
+    assert gesture.update(CHORD, 0.3)
+    assert not gesture.update(CHORD, 0.4)
 
 
 def test_menu_fit_gesture_resets_after_timeout_or_other_button() -> None:
-    gesture = RepeatedChordGesture(CHORD, repeats=3, timeout_s=1.0)
+    gesture = RepeatedChordGesture(CHORD, repeats=2, timeout_s=1.0)
 
     assert not gesture.update(CHORD, 0.0)
     assert not gesture.update({}, 0.1)
@@ -27,9 +25,7 @@ def test_menu_fit_gesture_resets_after_timeout_or_other_button() -> None:
     assert not gesture.update({}, 1.5)
     assert not gesture.update(CHORD, 1.6)
     assert not gesture.update({}, 1.7)
-    assert not gesture.update(CHORD, 1.8)
-    assert not gesture.update({}, 1.9)
-    assert gesture.update(CHORD, 2.0)
+    assert gesture.update(CHORD, 1.8)
 
 
 def test_both_buttons_must_be_released_between_counts() -> None:

@@ -1,0 +1,29 @@
+schema_version: 1
+name: task2_current_zero
+kind: task_start
+configured: true
+units: rad
+schema_ref: ../../input_schemas/ur5e_wrist_gripper_9dof.yaml
+captured_at_unix_s: 1787577656.5072474
+captured_at_monotonic_s: 103933.904504278
+provenance:
+  source: live_read_only_hardware_snapshot
+  captured_at: "2026-08-24"
+  record_type: current_pose_snapshot
+  safety_note: Read-only capture; no HOME or movement command was sent.
+  note: This is a current pose snapshot, not a verified mechanical zero.
+joint_names: [shoulder_pan_joint, shoulder_lift_joint, elbow_joint, wrist_1_joint, wrist_2_joint, wrist_3_joint, wrist_pitch_joint, wrist_yaw_joint, gripper_joint]
+joint_positions: [3.2977943420410156, -1.5669592062579554, -0.9337509314166468, -2.2119277159320276, 1.5755716562271118, -1.0345171133624476, -0.4106759729942655, 0.004014257279586779, 0.0]
+components:
+  ur5:
+    joint_positions_rad: [3.2977943420410156, -1.5669592062579554, -0.9337509314166468, -2.2119277159320276, 1.5755716562271118, -1.0345171133624476]
+    tcp_pose_xyz_rotvec: [-0.4192769520650925, 0.046423793136119516, 0.4020857981335172, -0.3948303986148336, -2.007476060884764, 2.011713336379339]
+  wrist:
+    encoder_absolute_deg: [64.93, 164.88]
+    configured_zero_deg: [64.93, 164.88]
+  gripper:
+    position_raw: 100
+    binary_state: 0
+    binary_definition: 0=open, 1=closed
+    temperature_c: 45
+    voltage_v: 6.168

@@ -56,8 +56,8 @@ class SpaceMouseMonitor:
 
         self._buttons = tk.StringVar(
             value=(
-                "1/CW: up    2/CCW: up    3/Record: up    "
-                "4/Home: up    Shift: up    Ctrl: up"
+                "1/CW: up    2/CCW: up    T: up    "
+                "3/4: gripper placeholder    Shift: up"
             )
         )
         tk.Label(self._root, textvariable=self._buttons, font=("Monospace", 11)).pack(pady=10)
@@ -92,15 +92,15 @@ class SpaceMouseMonitor:
 
         one = bool(buttons.get(int(Button.ONE), False))
         two = bool(buttons.get(int(Button.TWO), False))
-        three = bool(buttons.get(int(Button.THREE), False))
-        home = bool(buttons.get(int(Button.HOME), False))
+        home = bool(buttons.get(int(Button.T), False))
         shift = bool(buttons.get(int(Button.SHIFT), False))
-        ctrl = bool(buttons.get(int(Button.CTRL), False))
+        three = bool(buttons.get(int(Button.THREE), False))
+        four = bool(buttons.get(int(Button.FOUR), False))
         self._buttons.set(
             f"1/CW: {'DOWN' if one else 'up'}    2/CCW: {'DOWN' if two else 'up'}    "
-            f"3: {'DOWN' if three else 'up'}    "
-            f"4/Home: {'DOWN' if home else 'up'}    "
-            f"Shift: {'DOWN' if shift else 'up'}    Ctrl: {'DOWN' if ctrl else 'up'}"
+            f"T: {'DOWN' if home else 'up'}    "
+            f"3: {'DOWN' if three else 'up'}  4: {'DOWN' if four else 'up'}    "
+            f"Shift: {'DOWN' if shift else 'up'}"
         )
         try:
             self._root.update_idletasks()

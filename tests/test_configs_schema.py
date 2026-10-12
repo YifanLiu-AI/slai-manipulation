@@ -67,7 +67,9 @@ def test_pose_dimensions_and_safety_defaults() -> None:
 
         expected_dimension = 20 if pose["kind"] == "hand_preset" else None
         if pose["kind"] in {"task_start", "device_home"}:
-            expected_dimension = 26
+            expected_dimension = 9 if pose.get("schema_ref", "").endswith(
+                "input_schemas/ur5e_wrist_gripper_9dof.yaml"
+            ) else 26
         assert len(pose["joint_positions"]) == expected_dimension, path
 
     home = load_yaml(CONFIGS / "poses" / "home.yaml")

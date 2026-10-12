@@ -29,7 +29,7 @@ def test_independent_fr_and_thumb_modes_match_legacy() -> None:
     assert fr_grasp_mode({int(Button.F): True, int(Button.R): True}) is None
     assert combine_grasp_modes("close", "open") == (None, "conflict")
     assert thumb_group_mode({int(Button.ROLL_CW): True}) == "toward_state_1"
-    assert thumb_group_mode({int(Button.T): True}) == "restore_state_0"
+    assert thumb_group_mode({int(Button.T): True}) is None
 
 
 def test_trajectory_applies_acceleration_and_stopping_limits() -> None:
@@ -60,7 +60,7 @@ class _Session:
         self.commands.append(np.asarray(value))
 
 
-def test_manual_controller_uses_30hz_and_priority_close_speed() -> None:
+def test_button3_and_button4_placeholders_do_not_change_wuji_target() -> None:
     session = _Session()
     controller = ManualWujiController(
         session,
@@ -78,7 +78,9 @@ def test_manual_controller_uses_30hz_and_priority_close_speed() -> None:
     assert len(session.commands) == 1
     assert controller.update(buttons, 1.04)
     assert len(session.commands) == 2
-    assert session.commands[-1][8] > session.commands[-1][0]
+    np.testing.assert_array_equal(session.commands[-1], np.zeros(20))
+    assert controller.update({int(Button.HOME): True}, 1.08)
+    np.testing.assert_array_equal(session.commands[-1], np.zeros(20))
 
 
 def test_home_uses_task_zero_independently_of_open_preset() -> None:
@@ -93,12 +95,12 @@ def test_home_uses_task_zero_independently_of_open_preset() -> None:
         settings=ManualHandSettings(release_speed=3.0, release_acceleration=20.0),
         timestamp=1.0,
     )
-    assert controller.update({int(Button.HOME): True}, 1.04)
+    assert controller.update({int(Button.T): True}, 1.04)
     assert np.all(session.commands[-1] > 0.0)
     np.testing.assert_array_equal(controller.home_target, np.full(20, 0.5))
 
 
-def test_circled_buttons_use_independent_legacy_full_hand_states() -> None:
+def test_roll_button_uses_auxiliary_grasp_state() -> None:
     session = _Session()
     controller = ManualWujiController(
         session,
@@ -114,7 +116,3 @@ def test_circled_buttons_use_independent_legacy_full_hand_states() -> None:
     )
     assert controller.update({int(Button.ROLL_CW): True}, 1.04)
     assert np.all(session.commands[-1] > 0.0)
-    controller.trajectory.command.fill(0.0)
-    controller.trajectory.command_velocity.fill(0.0)
-    assert controller.update({int(Button.T): True}, 1.08)
-    assert np.all(session.commands[-1] < 0.0)

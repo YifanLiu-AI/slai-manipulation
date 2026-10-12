@@ -122,7 +122,7 @@ def test_dashboard_serves_status_and_static_page() -> None:
         response = connection.getresponse()
         history = json.loads(response.read())
         assert response.status == 200
-        assert history["dataset_root"].endswith("/data/lerobot")
+        assert history["dataset_root"].endswith("/data/lerobot/real-9D")
         assert isinstance(history["sessions"], list)
     finally:
         server.shutdown()

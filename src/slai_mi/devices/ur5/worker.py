@@ -13,14 +13,27 @@ from slai_mi.devices.worker_server import serve
 
 RUNNING_ROBOT_MODE = 7
 NORMAL_SAFETY_MODE = 1
+# Accept only representation-level noise at a hard boundary; meaningful
+# overspeed remains fail-closed. Commands inside this epsilon are clipped back.
+SPEED_LIMIT_EPSILON = 1e-12
+
+
+def _enforce_speed_limit(values: list[float], limit: float, message: str) -> list[float]:
+    if any(abs(value) > limit + SPEED_LIMIT_EPSILON for value in values):
+        raise ValueError(message)
+    return [min(max(value, -limit), limit) for value in values]
 
 
 class FakeRTDE:
     def __init__(self) -> None:
         self.twist = [0.0] * 6
+        self.pose = [0.0] * 6
 
     def state(self) -> dict[str, Any]:
-        return {"tcp_pose": [0.0] * 6, "tcp_speed": self.twist, "joints": [0.0] * 6, "robot_mode": 7, "safety_mode": 1}
+        return {"tcp_pose": self.pose.copy(), "tcp_speed": self.twist, "joints": [0.0] * 6, "robot_mode": 7, "safety_mode": 1}
+
+    def tcp_pose(self) -> list[float]:
+        return self.pose.copy()
 
     def speed(self, twist: list[float], _acceleration: float, _duration_s: float) -> None:
         self.twist = twist
@@ -106,6 +119,9 @@ class VendorRTDE:
             "safety_mode": int(self.receiver.getSafetyMode()),
         }
 
+    def tcp_pose(self) -> list[float]:
+        return list(self.receiver.getActualTCPPose())
+
     def speed(self, twist: list[float], acceleration: float, duration_s: float) -> None:
         self._ensure_control()
         assert self.control is not None
@@ -175,10 +191,20 @@ class VendorRTDE:
 
 
 class UR5WorkerBackend:
-    def __init__(self, rtde: Any, *, max_linear: float, max_angular: float):
+    def __init__(
+        self,
+        rtde: Any,
+        *,
+        max_linear: float,
+        max_angular: float,
+        min_tcp_z_m: float | None = None,
+    ):
+        if min_tcp_z_m is not None and not math.isfinite(min_tcp_z_m):
+            raise ValueError("UR5 minimum TCP Z must be finite")
         self.rtde = rtde
         self.max_linear = max_linear
         self.max_angular = max_angular
+        self.min_tcp_z_m = min_tcp_z_m
 
     def _state(self) -> dict[str, Any]:
         state = self.rtde.state()
@@ -209,14 +235,24 @@ class UR5WorkerBackend:
             twist = [float(value) for value in payload.get("twist", [])]
             if len(twist) != 6 or not all(math.isfinite(value) for value in twist):
                 raise ValueError("UR5 twist must contain six finite values")
-            if any(abs(value) > self.max_linear for value in twist[:3]):
-                raise ValueError("UR5 linear speed exceeds worker limit")
-            if any(abs(value) > self.max_angular for value in twist[3:]):
-                raise ValueError("UR5 angular speed exceeds worker limit")
+            twist[:3] = _enforce_speed_limit(
+                twist[:3], self.max_linear, "UR5 linear speed exceeds worker limit"
+            )
+            twist[3:] = _enforce_speed_limit(
+                twist[3:], self.max_angular, "UR5 angular speed exceeds worker limit"
+            )
             acceleration = float(payload.get("acceleration", 0.0))
             duration_s = float(payload.get("duration_s", 0.0))
             if not 0.0 < acceleration <= 0.5 or not 0.0 < duration_s <= 0.1:
                 raise ValueError("UR5 acceleration or command duration exceeds worker limit")
+            if self.min_tcp_z_m is not None and twist[2] < 0.0:
+                pose = [float(value) for value in self.rtde.tcp_pose()]
+                if len(pose) != 6 or not all(math.isfinite(value) for value in pose):
+                    raise RuntimeError("invalid UR5 TCP pose feedback for floor guard")
+                current_z = pose[2]
+                projected_z = current_z + twist[2] * max(0.25, 2.0 * duration_s)
+                if current_z <= self.min_tcp_z_m or projected_z < self.min_tcp_z_m:
+                    twist[2] = 0.0
             self.rtde.speed(twist, acceleration, duration_s)
             return {"type": "command_ack"}
         if message_type == "write_joint_velocity":
@@ -226,8 +262,9 @@ class UR5WorkerBackend:
             velocity = [float(value) for value in payload.get("velocity", [])]
             if len(velocity) != 6 or not all(math.isfinite(value) for value in velocity):
                 raise ValueError("UR5 joint velocity must contain six finite values")
-            if any(abs(value) > self.max_angular for value in velocity):
-                raise ValueError("UR5 joint speed exceeds worker limit")
+            velocity = _enforce_speed_limit(
+                velocity, self.max_angular, "UR5 joint speed exceeds worker limit"
+            )
             acceleration = float(payload.get("acceleration", 0.0))
             duration_s = float(payload.get("duration_s", 0.0))
             if not 0.0 < acceleration <= 0.5 or not 0.0 < duration_s <= 0.1:
@@ -257,14 +294,28 @@ def main() -> None:
     parser.add_argument("--watchdog-s", type=float, default=0.25)
     parser.add_argument("--max-linear", type=float, default=0.02)
     parser.add_argument("--max-angular", type=float, default=0.1)
+    parser.add_argument("--min-tcp-z", type=float)
     parser.add_argument("--fake", action="store_true")
     args = parser.parse_args()
 
     def factory() -> UR5WorkerBackend:
         rtde = FakeRTDE() if args.fake else VendorRTDE(args.host)
-        return UR5WorkerBackend(rtde, max_linear=args.max_linear, max_angular=args.max_angular)
+        return UR5WorkerBackend(
+            rtde,
+            max_linear=args.max_linear,
+            max_angular=args.max_angular,
+            min_tcp_z_m=args.min_tcp_z,
+        )
 
-    serve(socket_path=args.socket, device_id=args.device_id, backend_factory=factory, watchdog_s=args.watchdog_s)
+    serve(
+        socket_path=args.socket,
+        device_id=args.device_id,
+        backend_factory=factory,
+        watchdog_s=args.watchdog_s,
+        watchdog_refresh_types=frozenset(
+            {"write_twist", "write_joint_velocity", "stop_motion", "disable", "shutdown"}
+        ),
+    )
 
 
 if __name__ == "__main__":

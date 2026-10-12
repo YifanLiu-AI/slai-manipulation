@@ -4,22 +4,33 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
+import pytest
 import yaml
 
 from slai_mi.devices.spacemouse.buttons import Button
 from slai_mi.devices.spacemouse.mapping import SpeedSettings
 from slai_mi.devices.wujihand.manual_control import ManualHandSettings
+from slai_mi.observability.flight_recorder import FlightRecorder
 from slai_mi.site_adapter import (
+    CachedSpaceMouse,
     ControlledSpaceMouse,
+    ControlledUR5SpaceMouse,
     NativeWristTeleopLoop,
     RealPolicyBridge,
     StationSession,
     Wrist2WristTeleopLoop,
+    _bounded_speed_settings,
     _cameras,
+    _clamp_command,
+    _configured_dataset,
+    _mouse,
     _task_home_joints,
+    _wrist_gate_action,
     make_teleop,
+    spacemouse_wrist_velocity,
 )
 
 
@@ -62,6 +73,9 @@ class FakeSession:
         self.supervisor.armed = True
 
     def prepare_ur5_control(self):
+        self.prepare_calls += 1
+
+    def prepare_control(self):
         self.prepare_calls += 1
 
     def write_ur5_twist(self, twist, *, acceleration, duration_s):
@@ -112,6 +126,41 @@ class FakeMouse:
         self.stopped = True
 
 
+def test_production_spacemouse_uses_spnav_backend() -> None:
+    session = type(
+        "Session",
+        (),
+        {"spacemouse_deadzone": 0.12, "control_period_s": 1.0 / 125.0},
+    )()
+
+    mouse = _mouse({}, session)
+
+    assert mouse.backend == "spnav"
+    assert mouse.event_device is None
+    assert mouse.rate_hz == 250.0
+
+
+def test_cached_spacemouse_zeros_transient_stale_descent_without_exiting() -> None:
+    mouse = FakeMouse(np.asarray([0.0, 0.0, -0.7, 0.0, 0.0, 0.0], dtype=np.float32))
+    cached = CachedSpaceMouse(mouse, period_s=0.008)
+    cached._latest = (mouse.motion.copy(), {})
+    cached._last_sample_time = time.monotonic() - 0.2
+
+    motion, buttons = cached.state()
+
+    np.testing.assert_array_equal(motion, np.zeros(6, dtype=np.float32))
+    assert buttons == {}
+
+
+def test_cached_spacemouse_fails_after_one_second_without_samples() -> None:
+    cached = CachedSpaceMouse(FakeMouse(), period_s=0.008)
+    cached._last_sample_time = time.monotonic() - 1.1
+
+    with np.testing.assert_raises_regex(RuntimeError, "remained stale"):
+        cached.state()
+    np.testing.assert_array_equal(cached._latest[0], np.zeros(6, dtype=np.float32))
+
+
 def test_collection_mouse_arms_only_on_first_control_state():
     session = FakeSession()
     mouse = FakeMouse()
@@ -146,7 +195,7 @@ def test_collection_waits_for_slow_rtde_prepare_before_first_command_timeout():
     assert session.arm_calls == 1
 
 
-def test_collection_mouse_uses_legacy_ctrl_speed_and_control_period():
+def test_collection_mouse_ignores_ctrl_and_uses_control_period():
     session = FakeSession()
     mouse = FakeMouse(
         np.asarray([1.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32),
@@ -154,10 +203,208 @@ def test_collection_mouse_uses_legacy_ctrl_speed_and_control_period():
     )
     with ControlledSpaceMouse(mouse, session) as controller:
         controller.state()
-    assert session.twists[0] == ((0.25, 0.0, 0.0, 0.0, 0.0, 0.0), 0.5, 0.008)
+    assert session.twists[0] == ((0.08, 0.0, 0.0, 0.0, 0.0, 0.0), 0.5, 0.008)
 
 
-def test_collection_mouse_uses_legacy_wrist_and_home_buttons():
+def test_ur5_control_loop_dumps_flight_recorder_on_failure(monkeypatch, tmp_path) -> None:
+    class BrokenWrist:
+        def check(self):
+            return None
+
+        def clear_spacemouse_velocity(self):
+            return None
+
+        def set_spacemouse_velocity(self, *_args):
+            return None
+
+        def request_resume(self):
+            return None
+
+    class BrokenMouse:
+        def __init__(self):
+            self.calls = 0
+
+        def start(self):
+            return None
+
+        def stop(self):
+            return None
+
+        def state(self):
+            self.calls += 1
+            if self.calls == 1:
+                return np.asarray([0.0, 0.0, -0.35, 0.0, 0.0, 0.0], dtype=np.float32), {}
+            raise RuntimeError("SpaceMouse worker remained stale for 1.200s")
+
+        def diagnostics(self):
+            return {"last_generated_time": time.monotonic()}
+
+    session = FakeSession()
+    session.supervisor = SimpleNamespace(
+        armed=False,
+        arm=lambda: None,
+        call_with_peer_heartbeats=lambda _device_id, operation, **_kwargs: operation(),
+    )
+    recorder = FlightRecorder(capacity=16)
+    original_dump = recorder.dump
+    dumped: list[Path] = []
+
+    def dump_to_test_directory(*, reason, directory=None, clock=time.time):
+        path = original_dump(reason=reason, directory=tmp_path, clock=clock)
+        dumped.append(path)
+        return path
+
+    monkeypatch.setattr(recorder, "dump", dump_to_test_directory)
+    controller = ControlledUR5SpaceMouse(
+        BrokenMouse(), session, BrokenWrist(), flight_recorder=recorder
+    )
+
+    with pytest.raises(RuntimeError, match="remained stale"), controller:
+        for _ in range(50):
+            controller.state()
+            time.sleep(0.01)
+
+    assert dumped and dumped[0].is_file()
+    assert len(recorder) >= 1
+    snapshot = recorder.snapshot()
+    assert snapshot[0].spacemouse_motion[2] == pytest.approx(-0.35, abs=1e-6)
+    assert snapshot[0].ur5_commanded_twist[2] == pytest.approx(-0.028, abs=1e-6)
+
+
+def test_ur5_control_loop_dumps_flight_recorder_on_normal_stop(monkeypatch, tmp_path) -> None:
+    class Wrist:
+        def check(self):
+            return None
+
+        def clear_spacemouse_velocity(self):
+            return None
+
+        def set_spacemouse_velocity(self, *_args):
+            return None
+
+        def request_resume(self):
+            return None
+
+    mouse = FakeMouse(
+        np.asarray([0.0, 0.0, -0.25, 0.0, 0.0, 0.0], dtype=np.float32)
+    )
+    mouse.diagnostics = lambda: {"last_generated_time": time.monotonic()}
+    session = FakeSession()
+    session.supervisor = SimpleNamespace(
+        armed=False,
+        arm=lambda: None,
+        call_with_peer_heartbeats=lambda _device_id, operation, **_kwargs: operation(),
+    )
+    recorder = FlightRecorder(capacity=16)
+    original_dump = recorder.dump
+    dumped: list[Path] = []
+
+    def dump_to_test_directory(*, reason, directory=None, clock=time.time):
+        path = original_dump(reason=reason, directory=tmp_path, clock=clock)
+        dumped.append(path)
+        return path
+
+    monkeypatch.setattr(recorder, "dump", dump_to_test_directory)
+
+    with ControlledUR5SpaceMouse(
+        mouse, session, Wrist(), flight_recorder=recorder
+    ) as controller:
+        controller.state()
+        time.sleep(0.02)
+
+    assert dumped and dumped[0].is_file()
+    payload = dumped[0].read_text(encoding="utf-8")
+    assert "control session stopped" in payload
+    assert '"spacemouse_sample_age_s"' in payload
+    assert '"ur5_commanded_twist"' in payload
+
+
+def test_task2_coordinated_home_opens_and_verifies_gripper(monkeypatch) -> None:
+    events: list[object] = []
+
+    class Wrist:
+        def clear_spacemouse_velocity(self):
+            events.append("wrist-clear")
+
+        def request_home(self):
+            events.append("wrist-home")
+
+        def request_resume(self):
+            events.append("wrist-resume")
+
+        def home_status(self):
+            return {"at_home": True, "detail": "wrist zero"}
+
+    class Gripper:
+        def command(self, value):
+            events.append(("gripper", value))
+
+        def read_state(self):
+            return type(
+                "State",
+                (),
+                {
+                    "actual_q": (0.0,),
+                    "target_q": (0.0,),
+                    "position": 0,
+                    "target_position": 0,
+                },
+            )()
+
+    controller = ControlledUR5SpaceMouse.__new__(ControlledUR5SpaceMouse)
+    controller.wrist = Wrist()
+    controller.gripper = Gripper()
+    controller.session = type("Session", (), {"ur5_home_joints": np.zeros(6)})()
+    controller._home_requested = threading.Event()
+    controller._home_stable_since = None
+    controller._latest_lock = threading.Lock()
+    controller.latest_ur5_joints = np.zeros(6)
+
+    controller.request_home()
+    assert events == ["wrist-clear", "wrist-home", ("gripper", 0)]
+    assert controller._home_requested.is_set()
+
+    clock = iter((10.0, 10.31))
+    monkeypatch.setattr("slai_mi.site_adapter.time.monotonic", lambda: next(clock))
+    assert not controller.home_status()["at_home"]
+    status = controller.home_status()
+    assert status["at_home"]
+    assert status["gripper"]["at_home"]
+    assert "gripper position=0" in status["detail"]
+
+    controller.clear_home()
+    assert events[-1] == "wrist-resume"
+
+
+def test_task2_low_level_home_preempts_without_workflow_dependency() -> None:
+    controller = ControlledUR5SpaceMouse.__new__(ControlledUR5SpaceMouse)
+    controller._home_receiver = type("Receiver", (), {"poll": lambda _self: True})()
+    controller._external_home_requested = threading.Event()
+    requests: list[str] = []
+    controller.request_home = lambda: requests.append("home")
+
+    controller._poll_home_command()
+
+    assert requests == ["home"]
+    assert controller.consume_external_home_request()
+    assert not controller.consume_external_home_request()
+
+
+def test_spacemouse_wrist_velocity_reverses_both_axes_and_suppresses_center_noise() -> None:
+    assert spacemouse_wrist_velocity(np.zeros(6)) == (0.0, 0.0)
+    # Ctrl wrist mapping reverses both of the previous directions:
+    # cap +X -> -FE and cap +Y -> +RU.
+    assert spacemouse_wrist_velocity(np.ones(6)) == (-45.0, 45.0)
+    assert spacemouse_wrist_velocity(-np.ones(6)) == (45.0, -45.0)
+    assert spacemouse_wrist_velocity(
+        np.asarray([0.17, -0.17, 0, 0, 0, 0])
+    ) == (0.0, 0.0)
+    small = spacemouse_wrist_velocity(np.asarray([0.30, -0.30, 0, 0, 0, 0]))
+    assert -7.0 < small[0] < -6.0
+    assert -7.0 < small[1] < -6.0
+
+
+def test_collection_mouse_uses_legacy_wrist_and_t_home_button():
     wrist_session = FakeSession()
     wrist_mouse = FakeMouse(buttons={int(Button.ONE): True})
     with ControlledSpaceMouse(wrist_mouse, wrist_session) as controller:
@@ -166,10 +413,48 @@ def test_collection_mouse_uses_legacy_wrist_and_home_buttons():
 
     home_session = FakeSession()
     home_session.ur5_home_joints = np.ones(6)
-    home_mouse = FakeMouse(buttons={int(Button.HOME): True})
+    home_mouse = FakeMouse(buttons={int(Button.T): True})
     with ControlledSpaceMouse(home_mouse, home_session) as controller:
         controller.state()
     assert home_session.twists[0][0] == (0.6,) * 6
+
+
+def test_ur5_operational_margin_replays_boundary_rounding_failure() -> None:
+    motion = {
+        "translation_speed": 0.107,
+        "rotation_speed": 0.54,
+        "precision_translation_speed": 0.25,
+        "precision_rotation_speed": 0.60,
+    }
+    speeds, linear_limit, angular_limit = _bounded_speed_settings(motion, 0.25, 0.60)
+    rounded_overflow = np.asarray([0.0, 0.0, 0.6000000000000001, 0.0, 0.0, 0.0])
+    limits = np.full(6, angular_limit)
+    command = _clamp_command(rounded_overflow, -limits, limits)
+
+    assert linear_limit == 0.225
+    assert angular_limit == 0.54
+    assert speeds.boost_translation == 0.225
+    assert speeds.boost_rotation == 0.54
+    assert np.max(np.abs(command)) == 0.54
+    assert np.max(np.abs(command)) < 0.60
+
+
+def test_task2_dataset_name_matches_nine_dof_contract(monkeypatch, tmp_path) -> None:
+    captured = {}
+    contract = type("Contract", (), {"robot_type": "ur5_wrist_gripper_9dof"})()
+    monkeypatch.setattr("slai_mi.site_adapter.importlib.util.find_spec", lambda _name: object())
+    monkeypatch.setattr("slai_mi.site_adapter.time.strftime", lambda _format: "20260825T190000")
+    monkeypatch.setattr(
+        "slai_mi.site_adapter.create_configured_dataset",
+        lambda **kwargs: captured.update(kwargs) or kwargs,
+    )
+
+    _configured_dataset(
+        {"root": str(tmp_path)}, {"task": {"id": "task2"}}, contract
+    )
+
+    assert captured["root"].name == "task2-9dof-20260825T190000"
+    assert captured["repo_id"] == "local/task2-9dof-20260825T190000"
 
 
 def test_station_session_loads_legacy_profile_without_watchdog_changes(monkeypatch):
@@ -185,8 +470,12 @@ def test_station_session_loads_legacy_profile_without_watchdog_changes(monkeypat
     monkeypatch.setattr("slai_mi.site_adapter.WujiHandDriverProcess", Driver)
     session = StationSession(hardware, task)
     assert session.control_period_s == 1.0 / 125.0
-    assert session.speed_settings.translation == 0.08
-    assert session.speed_settings.boost_translation == 0.25
+    assert session.speed_settings.translation == 0.107
+    assert session.speed_settings.boost_translation == 0.225
+    assert session.speed_settings.boost_rotation == 0.54
+    assert session.linear_command_limit == 0.225
+    assert session.angular_command_limit == 0.54
+    assert session.home_joint_speed == 0.50
     assert session.spacemouse_deadzone == 0.12
     assert session.max_offset_m == 0.0
     assert session.max_rotation_rad == 0.0
@@ -228,12 +517,24 @@ def test_wrist_strategy_builds_ur5_and_wrist_workers_without_wuji(monkeypatch) -
     assert wrist_loop.mouse == "shared-mouse"
 
 
+def test_r_button_requests_wrist_only_home_on_one_edge() -> None:
+    action, previous = _wrist_gate_action({int(Button.R): True}, {})
+    assert action == "home"
+    action, previous = _wrist_gate_action({int(Button.R): True}, previous)
+    assert action is None
+    action, previous = _wrist_gate_action({}, previous)
+    assert action is None
+    action, _ = _wrist_gate_action({int(Button.R): True}, previous)
+    assert action == "home"
+
+
 def test_wrist_teleop_parks_on_home_or_fit_and_resumes_on_menu(monkeypatch) -> None:
     hardware = yaml.safe_load(Path("configs/hardware.yaml").read_text(encoding="utf-8"))
     stop = threading.Event()
 
     class Controller:
         def __init__(self, *_args, **_kwargs):
+            self.home_requests = 0
             self.park_requests = 0
             self.resume_requests = 0
 
@@ -242,6 +543,9 @@ def test_wrist_teleop_parks_on_home_or_fit_and_resumes_on_menu(monkeypatch) -> N
 
         def __exit__(self, *_args):
             return None
+
+        def request_home(self):
+            self.home_requests += 1
 
         def request_park(self):
             self.park_requests += 1
@@ -255,8 +559,11 @@ def test_wrist_teleop_parks_on_home_or_fit_and_resumes_on_menu(monkeypatch) -> N
     class Mouse:
         def __init__(self):
             self.states = [
-                {int(Button.HOME): True},
-                {int(Button.HOME): True},
+                {int(Button.R): True},
+                {int(Button.R): True},
+                {},
+                {int(Button.T): True},
+                {int(Button.T): True},
                 {},
                 {int(Button.FIT): True},
                 {},
@@ -274,6 +581,7 @@ def test_wrist_teleop_parks_on_home_or_fit_and_resumes_on_menu(monkeypatch) -> N
     monkeypatch.setattr("slai_mi.site_adapter.WristMasterSlaveController", Controller)
     loop = NativeWristTeleopLoop(hardware, Mouse())
     loop.run(stop)
+    assert loop.controller.home_requests == 1
     assert loop.controller.park_requests == 2
     assert loop.controller.resume_requests == 1
 
@@ -305,7 +613,7 @@ def test_collection_camera_path_does_not_construct_retarget_provider(monkeypatch
     events = []
 
     class Capture:
-        def __init__(self, _configs):
+        def __init__(self, _configs, **_kwargs):
             pass
 
         def start(self):

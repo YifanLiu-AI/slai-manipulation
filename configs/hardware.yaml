@@ -12,6 +12,9 @@ ur5:
   # Hard ceilings; per-task operating speeds come from the control profile.
   max_linear_m_s: 0.25
   max_angular_rad_s: 0.60
+  # Absolute base-frame TCP floor: 50 mm below the stationary pose measured
+  # on 2026-08-25 (measured Z 0.13093 m). Commands projected below are blocked.
+  min_tcp_z_m: 0.08093
 
 wujihand:
   enabled: true
@@ -32,6 +35,46 @@ wujihand:
 
 spacemouse:
   enabled: true
+
+gripper:
+  enabled: true
+  # Switch only this value between feetech_sts3215 and hiwonder.
+  driver: hiwonder
+  teleop_rate_per_s: 1.0
+  teleop_command_hz: 30.0
+  inference_max_rate_per_s: 1.0
+  home_tolerance_normalized: 0.02
+  settle_time_ms: 400
+  adapters:
+    feetech_sts3215:
+      port: /dev/serial/by-id/usb-1a86_USB_Single_Serial_5B79077317-if00
+      servo_id: 13
+      baud: 1000000
+      # Normalized position 0=open and 1=closed. Recommission after linkage changes.
+      open_position: 100
+      closed_position: 3995
+      # Used only by the explicitly selected legacy binary strategy.
+      binary_threshold: 2048
+      speed: 250
+      acceleration: 8
+      timeout_s: 0.08
+      max_temperature_c: 70
+      max_load_raw: 750
+      max_current_raw: 600
+    hiwonder:
+      port: /dev/serial/by-id/usb-1a86_USB_Serial-if00-port0
+      servo_id: 1
+      baud: 115200
+      # Recommissioned with the original linkage on 2026-08-28.
+      open_position: 630
+      closed_position: 860
+      # Stable open feedback is 649 for command 630; raw feedback remains recorded.
+      feedback_position_bias: 19
+      binary_threshold: 745
+      full_stroke_time_ms: 1000
+      min_move_time_ms: 20
+      timeout_s: 0.3
+      max_temperature_c: 60
 
 cameras:
   enabled: true
@@ -57,12 +100,12 @@ iphone:
 
 wrist_sensor:
   enabled: true
-  # OpenRB V2 controller and calibrated FE/RU zero are owned by the original
-  # Wrist2Wrist project; scx only invokes that existing HOME path.
-  openrb_port: auto
-  teleop_port: auto
+  # The runtime adapter owns per-assembly HOME baselines. The vendor project
+  # remains read-only; this local copy is used only for controller parameters.
+  openrb_port: /dev/serial/by-id/usb-ROBOTIS_OpenRB-150_E261BD20503059384C2E3120FF08262F-if00
+  teleop_port: /dev/serial/by-id/usb-1a86_USB_Single_Serial_5B90160584-if00
   baud: 115200
   mode: hold
-  config: third_party/02_Python_Client_CLI/closed_loop_record/wrist_output_v2.yaml
+  config: /home/user/shiyi/slai-manipulation/runtime/wrist_output_v2.yaml
 
 adapter_plugin: slai_mi.site_adapter:make_dependencies

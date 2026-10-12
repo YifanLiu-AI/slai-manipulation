@@ -6,6 +6,7 @@ import threading
 import time
 from collections import deque
 from contextlib import suppress
+from itertools import product
 
 import numpy as np
 
@@ -13,10 +14,19 @@ from .models import CameraConfig, CameraFrame
 
 
 class FrameSynchronizer:
-    def __init__(self, camera_names: tuple[str, ...], queue_size: int = 8):
+    def __init__(
+        self,
+        camera_names: tuple[str, ...],
+        queue_size: int = 8,
+        *,
+        max_skew_ms: float | None = None,
+    ):
         if len(camera_names) < 2 or len(set(camera_names)) != len(camera_names) or queue_size < 2:
             raise ValueError("synchronizer needs unique cameras and queue_size >= 2")
+        if max_skew_ms is not None and max_skew_ms <= 0.0:
+            raise ValueError("max_skew_ms must be positive")
         self._queues = {name: deque(maxlen=queue_size) for name in camera_names}
+        self._max_skew_s = None if max_skew_ms is None else max_skew_ms / 1000.0
         self._condition = threading.Condition()
 
     def add(self, frame: CameraFrame) -> None:
@@ -29,30 +39,76 @@ class FrameSynchronizer:
     def read(self, timeout_s: float = 1.0) -> dict[str, CameraFrame]:
         deadline = time.monotonic() + timeout_s
         with self._condition:
-            while not all(self._queues.values()):
+            while True:
+                chosen = self._choose_frames() if all(self._queues.values()) else None
+                if chosen is not None:
+                    for name, frame in chosen.items():
+                        queue = self._queues[name]
+                        while queue:
+                            current = queue.popleft()
+                            if current is frame:
+                                break
+                    return chosen
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise TimeoutError("timed out waiting for synchronized camera frames")
+                    latest = {
+                        name: queue[-1].host_timestamp_s if queue else None
+                        for name, queue in self._queues.items()
+                    }
+                    available = [value for value in latest.values() if value is not None]
+                    latest_skew_ms = (
+                        (max(available) - min(available)) * 1000.0
+                        if len(available) == len(latest)
+                        else None
+                    )
+                    raise TimeoutError(
+                        "timed out waiting for synchronized camera frames; "
+                        f"latest_skew_ms={latest_skew_ms!r} latest={latest}"
+                    )
                 self._condition.wait(remaining)
+
+    def _choose_frames(self) -> dict[str, CameraFrame] | None:
+        if self._max_skew_s is None:
             reference = min(queue[-1].host_timestamp_s for queue in self._queues.values())
-            chosen = {name: min(queue, key=lambda frame: abs(frame.host_timestamp_s - reference)) for name, queue in self._queues.items()}
-            for name, frame in chosen.items():
-                queue = self._queues[name]
-                while queue:
-                    current = queue.popleft()
-                    if current is frame:
-                        break
-            return chosen
+            return {
+                name: min(queue, key=lambda frame: abs(frame.host_timestamp_s - reference))
+                for name, queue in self._queues.items()
+            }
+        names = tuple(self._queues)
+        feasible: list[tuple[float, float, tuple[CameraFrame, ...]]] = []
+        for frames in product(*(self._queues[name] for name in names)):
+            times = [frame.host_timestamp_s for frame in frames]
+            skew = max(times) - min(times)
+            if skew <= self._max_skew_s:
+                feasible.append((min(times), -skew, frames))
+        if not feasible:
+            return None
+        # Prefer the newest complete group, using lower skew only as a tie-breaker.
+        frames = max(feasible, key=lambda item: item[:2])[2]
+        return dict(zip(names, frames, strict=True))
 
 
 class RealSenseCapture:
     """Capture configured cameras; pyrealsense2 is imported only by start()."""
 
-    def __init__(self, configs: tuple[CameraConfig, ...], *, rs_module=None, clock=time.monotonic):
+    def __init__(
+        self,
+        configs: tuple[CameraConfig, ...],
+        *,
+        rs_module=None,
+        clock=time.monotonic,
+        max_skew_ms: float | None = None,
+    ):
         if not configs:
             raise ValueError("at least one camera is required")
         self.configs, self._rs, self._clock = configs, rs_module, clock
-        self.synchronizer = FrameSynchronizer(tuple(item.name for item in configs)) if len(configs) > 1 else None
+        self.synchronizer = (
+            FrameSynchronizer(
+                tuple(item.name for item in configs), max_skew_ms=max_skew_ms
+            )
+            if len(configs) > 1
+            else None
+        )
         self._latest: dict[str, CameraFrame] = {}
         self._pipelines: list[object] = []
         self._threads: list[threading.Thread] = []

@@ -1,7 +1,20 @@
 schema_version: 1
 format: lerobot_v3
-root: data/lerobot
+root: data/lerobot/last
 fps: 30
+# After each finalized TASK2 session, classify every Episode by FE/RU target
+# peak-to-peak range. Internal group keys remain stable for compatibility:
+#   2DoF-only = wrist FE/RU motion is active
+#   3DoF-only = no meaningful wrist motion in the Episode
+# Public output directories use semantic names to avoid confusing these labels
+# with the complete 9DoF state/action schema.
+wrist_auto_merge:
+  enabled: true
+  action_range_threshold_deg: 5.0
+  output_roots:
+    2DoF-only: data/lerobot/aggregates/task2-wrist-2dof
+    3DoF-only: data/lerobot/aggregates/task2-no-wrist-motion
+
 units:
   joint_position: rad
   tcp_translation: m
@@ -21,6 +34,9 @@ joint_groups:
     dimension: 2
     # Confirm these names against the production wrist/URDF before enabling 28-DoF data.
     joint_names: [wrist_pitch_joint, wrist_yaw_joint]
+  gripper:
+    dimension: 1
+    joint_names: [gripper_joint]
   wujihand:
     dimension: 20
     joint_names:
@@ -58,6 +74,14 @@ schemas:
     dimension: 28
     joint_groups: [ur5, wrist, wujihand]
     note: Simulation articulation includes the two wrist joints.
+  task2_9dof:
+    dimension: 9
+    joint_groups: [ur5, wrist, gripper]
+    note: TASK2 real capture stores UR5, measured OpenRB wrist, and binary gripper state.
+  task2_9dof_continuous:
+    dimension: 9
+    joint_groups: [ur5, wrist, gripper]
+    note: TASK2 continuous capture stores normalized gripper position instead of the binary state.
 
 # Conversion between 26 and 28 dimensions must be explicit; never silently pad values.
 cross_schema_conversion: disabled

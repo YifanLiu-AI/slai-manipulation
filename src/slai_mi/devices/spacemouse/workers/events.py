@@ -34,6 +34,7 @@ def main() -> None:
     sock = socket.socket(fileno=args.socket_fd)
     sock.setblocking(False)
     period = 1.0 / args.rate_hz
+    packet_count = 0
     try:
         with SpaceMouse(
             deadzone=args.deadzone,
@@ -48,13 +49,21 @@ def main() -> None:
                         break
                 except BlockingIOError:
                     pass
-                motion, buttons = spacemouse.state()
+                motion, buttons, event_time = spacemouse.timestamped_state()
+                diagnostics = spacemouse.diagnostics()
+                packet_count += 1
                 _send(
                     sock,
                     {
                         "type": "state",
+                        "generated_monotonic_s": time.monotonic(),
                         "motion": motion.tolist(),
                         "buttons": buttons,
+                        "packet_count": packet_count,
+                        "last_event_time": event_time or None,
+                        "event_count": diagnostics["event_count"],
+                        "reconnect_count": diagnostics["reconnect_count"],
+                        "connected": diagnostics["connected"],
                     },
                 )
                 elapsed = time.monotonic() - started

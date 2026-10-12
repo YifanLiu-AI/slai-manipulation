@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from slai_mi.devices.ur5.worker import VendorRTDE
+from slai_mi.devices.ur5.worker import FakeRTDE, UR5WorkerBackend, VendorRTDE
 
 
 class FakeReceiver:
@@ -76,6 +76,74 @@ def install_fakes(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(
         sys.modules, "rtde_control", SimpleNamespace(RTDEControlInterface=FakeControl)
     )
+
+
+def test_worker_floor_blocks_descent_but_allows_upward_recovery() -> None:
+    rtde = FakeRTDE()
+    rtde.pose = [0.0, 0.0, 0.13093, 0.0, 0.0, 0.0]
+    backend = UR5WorkerBackend(
+        rtde,
+        max_linear=0.25,
+        max_angular=0.60,
+        min_tcp_z_m=0.13093,
+    )
+    payload = {
+        "acceleration": 0.5,
+        "duration_s": 0.008,
+    }
+
+    backend.handle(
+        "write_twist", {**payload, "twist": [0.01, 0.0, -0.08, 0.0, 0.0, 0.0]}, armed=True
+    )
+    assert rtde.twist == [0.01, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+    backend.handle(
+        "write_twist", {**payload, "twist": [0.0, 0.0, 0.08, 0.0, 0.0, 0.0]}, armed=True
+    )
+    assert rtde.twist == [0.0, 0.0, 0.08, 0.0, 0.0, 0.0]
+
+
+def test_worker_floor_blocks_a_command_projected_below_the_floor() -> None:
+    rtde = FakeRTDE()
+    rtde.pose = [0.0, 0.0, 0.14, 0.0, 0.0, 0.0]
+    backend = UR5WorkerBackend(
+        rtde,
+        max_linear=0.25,
+        max_angular=0.60,
+        min_tcp_z_m=0.13093,
+    )
+
+    backend.handle(
+        "write_twist",
+        {
+            "twist": [0.0, 0.0, -0.08, 0.0, 0.0, 0.0],
+            "acceleration": 0.5,
+            "duration_s": 0.008,
+        },
+        armed=True,
+    )
+
+    assert rtde.twist == [0.0] * 6
+
+
+def test_worker_clips_float_noise_but_rejects_meaningful_joint_overspeed() -> None:
+    rtde = FakeRTDE()
+    backend = UR5WorkerBackend(rtde, max_linear=0.25, max_angular=0.60)
+    payload = {
+        "velocity": [0.6000000000000001, 0.0, 0.0, 0.0, 0.0, 0.0],
+        "acceleration": 0.5,
+        "duration_s": 0.008,
+    }
+
+    assert backend.handle("write_joint_velocity", payload, armed=True) == {
+        "type": "command_ack"
+    }
+    with pytest.raises(ValueError, match="joint speed"):
+        backend.handle(
+            "write_joint_velocity",
+            {**payload, "velocity": [0.601, 0.0, 0.0, 0.0, 0.0, 0.0]},
+            armed=True,
+        )
 
 
 def test_vendor_replaces_existing_control_script_and_stops_it(

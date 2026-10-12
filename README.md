@@ -16,6 +16,10 @@ source ~/.bash_aliases
 
 | 命令 | 准确用途 | 实际执行方式 | 会让真机运动 |
 |---|---|---|---|
+| `Home` | 在任意 TASK2 状态下抢占控制，使 UR5、双轴腕部和夹爪返回统一零位 | 底层 socket；无人持有硬件时直控 | **是** |
+| `jax-home` | 让 TASK2 连续 JAX 链路先回统一零位后退出 | `Sensecore_H100/.venv` | **是** |
+| `jax-slow` | 回零后以低速启动指定 2DoF/3DoF JAX checkpoint 推理 | OpenPI `.venv` | **是** |
+| `jax-normal` | 回零后以正常速度启动指定 2DoF/3DoF JAX checkpoint 推理 | OpenPI `.venv` | **是** |
 | `s` | 当前终端进入项目目录 | 无 | 否 |
 | `sr` | 显示 UR5 + WujiHand 真机遥操作计划 | `uv run` 项目环境 | 否 |
 | `srx` | 启动 UR5 + WujiHand 真机遥操作 | `uv run` 项目环境 | **是** |
@@ -25,6 +29,8 @@ source ~/.bash_aliases
 | `scx` | 正式连续采集；采多少段由你决定，LOCK 或 `Ctrl-C` 才结束 | `.venv-lerobot-v3` | **是** |
 | `scw` | 显示 UR5e + 双轴腕部 8DoF 采集计划 | `.venv-lerobot-v3` | 否 |
 | `scwx` | 正式进行 UR5e + 双轴腕部 8DoF 采集 | `.venv-lerobot-v3` | **是** |
+| `sc9` | 显示 TASK2：UR5e + 手腕 + 夹爪 9DoF 采集计划 | `.venv-lerobot-v3` | 否 |
+| `sc9x` | 正式进行 TASK2 9DoF 采集（当前仍需完成验收） | `.venv-lerobot-v3` | **是** |
 | `scc` | `scx` 的兼容连续采集命令 | `.venv-lerobot-v3` | **是** |
 | `scs` | 显示仿真采集计划 | `uv run` 项目环境 | 否 |
 | `scsx` | 启动仿真采集 | `uv run` 项目环境 | 否 |
@@ -47,9 +53,14 @@ source ~/.bash_aliases
 | `wrist-park` | 将手腕移动到安全停放姿态 | `uv run` 项目环境 | **是** |
 | `sm collect` | 兼容旧命令，行为与 `scc` 完全相同 | `.venv-lerobot-v3` | **是** |
 
-不是所有快捷命令都走 `uv run`：普通应用入口使用 `uv run`；`sc`、`scx`、`scc` 和 `sm collect` 固定直接使用 `/home/user/shiyi/slai-manipulation/.venv-lerobot-v3/bin/python`，这是为了避免再次误用当前激活的 `(base)`、Conda 或普通 `.venv` 而报 `LeRobot v3 is not installed`；`rec` 和 `wuji-check` 固定直接使用项目 `.venv`；`s` 只执行 `cd`。采集环境缺少 `lerobot` 或 `slai_mi` 时，会在连接和运动前报错退出。
+不是所有快捷命令都走 `uv run`：普通应用入口使用 `uv run`；`Home`、`sc`、`scx`、`scc` 和 `sm collect` 固定直接使用 `/home/user/shiyi/slai-manipulation/.venv-lerobot-v3/bin/python`，这是为了避免再次误用当前激活的 `(base)`、Conda 或普通 `.venv` 而报 `LeRobot v3 is not installed`；`rec` 和 `wuji-check` 固定直接使用项目 `.venv`；`s` 只执行 `cd`。采集环境缺少 `lerobot` 或 `slai_mi` 时，会在连接和运动前报错退出。
 
-命令名末尾的 `x` 表示直接执行对应任务，不再只是打印计划。真机会运动的入口只有表中标为“是”的 `srx`、`scx`、`scc`、`sdx`、`rec` 和兼容写法 `sm collect`。
+命令名末尾的 `x` 表示直接执行对应任务，不再只是打印计划。表中标为“是”的命令会连接或驱动真机；`jax-home`、`jax-slow`、`jax-normal` 也会先执行回零并可能启动 JAX 推理。
+
+当前 TASK2 rollout 阶段，`jax-slow`、`jax-normal` 以及 `P01` 到 `P100` 的所有
+`Pxx-JAX2-01` / `Pxx-JAX3-01` episode 快捷命令统一使用 Sensecore_H100 中已完成离线 action
+检查的 `local4090_aug_2k` checkpoint。切换入口集中在
+`shell/slai-shortcuts.sh`；训练增强只在训练阶段启用，推理配置不会随机丢相机。
 
 参数直接接在短命令后，例如：
 
@@ -105,7 +116,29 @@ scwx --episodes 1    # 采一段并退出
 scwx                 # 连续采集，LOCK 或 Ctrl-C 结束
 ```
 
-`scwx` 会先暂停独立的 `record.leai.me` 相机服务，让采集进程独占三台 RealSense 和 8765 监控端口；采集退出后自动恢复网页服务。同一路由器下始终使用 `http://192.168.1.102:8765/`，不需要开启代理。腕部主手在程序启动时自动建立当前零点，不需要再按 ESP32 的 START 按钮。数据保存为 8D state（UR5 关节 6 + 腕部 FE/RU 实测 2）和 8D action（UR5 TCP 速度 6 + 腕部目标 2），所有腕部角度在主项目数据边界均为弧度。
+`scwx` 会先暂停独立的 `record.leai.me` 相机服务，让采集进程独占三台 RealSense 和 8765 监控端口；采集退出后自动恢复网页服务。同一路由器下始终使用 `http://192.168.1.102:8765/`，不需要开启代理。双轴腕部每次控制进程启动都会执行 `HOME_ALL`，等待机械 Home 完成，读取当次绝对编码器，并把该读数设置为本次运行的 FE/RU `0/0`；历史 YAML 零点只保留为供应商格式 fallback，不参与本次运行零点。诊断副本写入 Git 忽略的 `data/wrist_home_baseline.yaml`。腕部主手随后自动建立当前主手零点，不需要再按 ESP32 的 START 按钮。数据保存为 8D state（UR5 关节 6 + 腕部 FE/RU 实测 2）和 8D action（UR5 TCP 速度 6 + 腕部目标 2），所有腕部角度在主项目数据边界均为弧度。
+
+TASK2 9DoF 采集只使用专用入口，避免误启动 8DoF：
+
+```bash
+sc9                  # 只显示 TASK2 9DoF 计划
+sc9x --episodes 1    # 真实执行一段（当前 commissioning 会安全拒绝）
+sc9x                 # 连续真实采集（当前 commissioning 会安全拒绝）
+```
+
+9DoF 为 UR5 6 + OpenRB 手腕 2 + Hiwonder 夹爪 1；SpaceMouse 3（bnum 14）关闭夹爪，4（bnum 15）打开夹爪。夹爪 state/action 主维度均为二值 0/1。完成真实验收后，才把策略从 `commissioning` 改为 `ready`。
+
+TASK2 统一回零命令区分大小写，可从任意目录直接执行：
+
+```bash
+Home
+```
+
+采集控制器正在运行时，`Home` 通过 `/run/user/1000/slai-manipulation/task2-home.sock`
+直接抢占控制循环，不会再开一套 RTDE 或串口连接；若当前 Episode 尚未完成，它会立即
+停止并丢弃该段，再让 UR5 返回 `task2_start` 六轴关节位、腕部执行 `HOME_ALL` 返回本次
+FE/RU `0/0`、夹爪打开为 `0`。没有活动控制器时，命令才独占硬件并执行同一套回零。
+急停、保护停、驱动故障和过温保护始终有效，不会被 `Home` 绕过。
 
 采完一段后的 PI0.5 一步冒烟训练命令为：
 
@@ -287,6 +320,23 @@ uv run slai-collect-real --no-dashboard
 
 按键语义：Menu 开始；Fit 开始归零且继续录制，确认到位后才停止并保存；Esc 丢弃并归零，随后等待 Menu；Button4 归零。任何丢弃都不会主动开始下一段。零位和 SpaceMouse Shift 旋转未完成现场复验前，不要正式采集。
 
+如果采集服务因 USB 重连、预览 UI 占用相机或 UR5 worker fail-close 而停止，使用一键恢复命令：
+
+```bash
+/home/user/shiyi/slai-manipulation/deploy/restart_real_9d_collection.sh
+```
+
+脚本会检查 UR5 网络和 30001–30004 端口、夹爪/OpenRB/ESP32 串口、`spacenavd`，停止冲突的预览 UI，重启 `slai-wrist-collection.service`，等待自动归零，并确认三台 RealSense、UR5、腕部、夹爪和 SpaceMouse 都处于新鲜有效状态。
+
+成功输出包含：
+
+```text
+UR5_PREFLIGHT_OK
+COLLECTION_READY ... dataset=/home/user/shiyi/slai-manipulation/data/lerobot/real-9D/task-01-9dof-<timestamp>
+```
+
+脚本是幂等的：如果服务已经健康处于 `ready` 状态，只输出 `COLLECTION_ALREADY_READY`，不会重新归零或打断当前采集。真实机器人启动前仍必须确认工作区无人且急停可用。
+
 ### 仿真采集
 
 ```bash
@@ -352,6 +402,113 @@ bash deploy/h100_wrist8d_pipeline.sh
 
 可通过 `H100_HOST`、`REMOTE_PROJECT`、`NUM_GPUS`、`STEPS` 和 `BATCH_SIZE` 覆盖默认值。
 脚本不会修改 H100 上保留有现场改动的原工作目录。
+
+### ModelScope → CCI App → H100 中转训练
+
+安装独立客户端并在终端交互登录；令牌不得写入脚本、命令参数或 Git：
+
+```bash
+uv sync --extra modelscope
+export MODELSCOPE_ENDPOINT=https://modelscope.cn
+export MODELSCOPE_NAMESPACE=你的魔搭用户名
+uv run --extra modelscope ms-hub login
+uv run --extra modelscope ms-hub whoami
+```
+
+4090 将一个已提交的 LeRobot v3 数据集创建为私有
+`<namespace>/tmp-<task>-dataset` 并上传（默认命令只打印计划）：
+
+```bash
+uv run slai-modelscope dataset-upload \
+  --task task2 --source data/lerobot/task2-wrist8d-20260824T232021
+uv run --extra modelscope slai-modelscope dataset-upload \
+  --task task2 --source data/lerobot/task2-wrist8d-20260824T232021 --execute
+```
+
+上传会在源目录生成 `.slai-modelscope-manifest.json`，记录每个文件的 SHA-256、大小、
+文件数和总字节数。H100 下载后同时执行 `ms-hub cache verify` 和该 manifest 校验。
+
+安装并初始化河套 SCO-CLI；Access Key 只交互写入 SCO profile，不得提交到仓库：
+
+```bash
+curl -sSfL https://sco.sensecore.cn/registry/install.sh | bash
+export PATH="${SCO_HOME:-$HOME/.sco}/bin:$PATH"
+sco init
+sco doctor
+```
+
+4090 本地可把 SCO 凭据保存在 Git 忽略的 `.env`（权限必须为 `600`），变量名参考
+`.env.example`。项目提交脚本会读取该文件但不会打印 Secret。SCO v2.0.1 的 headless
+`init` 在部分终端中可能在认证成功后不写 profile；遇到该情况请在真实交互终端运行
+一次 `sco init`，不要把 Secret 直接写进 Shell 命令历史。凭据曾出现在聊天或日志中时
+应在流程跑通后立即轮换。
+
+在共享 AFS 上创建私有环境文件（例如
+`/mnt/afs/250010074/yifan/slai-manipulation/.secrets/modelscope.env`）：
+
+```bash
+MODELSCOPE_NAMESPACE=你的魔搭用户名
+TASK=task2
+CONFIG=configs/pi05_task2_9dof.yaml
+STEPS=30000
+BATCH_SIZE=1
+```
+
+该文件不进入 Git；ModelScope 登录仍在容器内通过 `ms-hub login` 建立。CCI App
+`app-o56pqogh` 需要在网页中预先保存以下启动命令：
+
+```bash
+exec bash /mnt/afs/250010074/yifan/slai-manipulation/deploy/sensecore_start.sh --cci
+```
+
+`--cci` 是严格验收模式，强制 1 GPU、1 step、batch size 1。启动和停止 CCI：
+
+```bash
+deploy/modelscope_cci_submit.sh cci-start
+EXECUTE=1 deploy/modelscope_cci_submit.sh cci-start
+
+EXECUTE=1 deploy/modelscope_cci_submit.sh cci-stop
+```
+
+默认 SCO 参数来自当前河套 workspace：
+
+```text
+subscription = 0197ee17-b6eb-7846-b2b4-a77c5f509b92
+workspace    = share-space
+region       = cn-sh-01
+CCI app      = app-o56pqogh
+```
+
+1 step 只验证：ModelScope 下载、数据完整性、视频解码、normalizer、模型加载、一次
+前向/反向、优化器更新和 checkpoint 写入；它不用于判断策略质量。验收通过后，复制
+`lyf-challenge-4` 的 4-GPU ACP 模板进行正式训练：
+
+```bash
+TASK=task2 deploy/modelscope_cci_submit.sh formal
+TASK=task2 EXECUTE=1 deploy/modelscope_cci_submit.sh formal
+```
+
+ACP 的容器启动命令是：
+
+```bash
+exec bash /mnt/afs/250010074/yifan/slai-manipulation/deploy/sensecore_start.sh
+```
+
+没有 `--cci` 时入口强制 4 GPU，并使用环境文件中的正式 steps/batch size。正式 H100
+worker 会把最终 checkpoint 上传到私有 `<namespace>/<task>-checkpoint`。
+4090 下载并双重校验：
+
+```bash
+uv run --extra modelscope slai-modelscope checkpoint-download \
+  --task task2 --target outputs/modelscope/task2-checkpoint \
+  --inference-template outputs/pi05/task2_gripper_1000_v2/inference.yaml \
+  --inference-output outputs/modelscope/task2-inference.yaml --execute
+```
+
+命令会在双重校验后识别下载的 `pretrained_model`，复制 inference 模板并只替换本地
+checkpoint 路径，不覆盖原有可用配置。下载后仍应先离线实际加载 checkpoint，再运行
+真机推理。任务恢复完成并确认不再有下载者后，才通过 ModelScope 网页删除临时仓库，
+删除临时令牌，并在 4090/H100 分别执行 `ms-hub logout`。
 
 推理：
 

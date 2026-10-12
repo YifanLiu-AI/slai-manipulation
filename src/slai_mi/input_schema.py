@@ -13,6 +13,8 @@ from slai_mi.rotation import normalize_ur_base_tcp_pose_to_rotation6d_columns
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SCHEMA_PATH = PROJECT_ROOT / "configs/input_schema.yaml"
+BINARY_GRIPPER_CONTRACT = "binary_endpoint"
+CONTINUOUS_GRIPPER_CONTRACT = "continuous_normalized_position"
 
 
 def load_input_schema(path: str | Path | None = None) -> dict[str, Any]:
@@ -58,7 +60,7 @@ def load_input_schema(path: str | Path | None = None) -> dict[str, Any]:
         components = vector.get("components")
         if not isinstance(components, list) or not components:
             raise ValueError(f"capture.{vector_name}.components must be a non-empty list")
-    for index, component in enumerate(components):
+        for index, component in enumerate(components):
             if not isinstance(component, dict) or not str(component.get("channel") or "").strip():
                 raise ValueError(f"capture.{vector_name}.components[{index}] requires a channel")
             names = component.get("names")
@@ -114,7 +116,42 @@ def load_input_schema(path: str | Path | None = None) -> dict[str, Any]:
     if not isinstance(command, dict) or not str(command.get("name") or "").strip():
         raise ValueError("synchronization.command_channel requires a name")
     _vector_spec(command, "synchronization.command_channel")
+    gripper_value_contract(data)
     return data
+
+
+def gripper_value_contract(schema: Mapping[str, Any]) -> str | None:
+    """Return the declared gripper semantics, defaulting legacy schemas to binary."""
+    capture = _mapping(schema, "capture")
+    components = {
+        vector_name: tuple(
+            component
+            for component in _mapping(capture, vector_name)["components"]
+            if str(component.get("channel")) == "gripper"
+        )
+        for vector_name in ("state", "action")
+    }
+    if not components["state"] and not components["action"]:
+        return None
+    if len(components["state"]) != 1 or len(components["action"]) != 1:
+        raise ValueError("gripper schemas require exactly one state and one action component")
+    section = schema.get("gripper", {})
+    if not isinstance(section, Mapping):
+        raise TypeError("input schema gripper must be a mapping")
+    contract = str(section.get("value_contract", BINARY_GRIPPER_CONTRACT))
+    if contract not in {BINARY_GRIPPER_CONTRACT, CONTINUOUS_GRIPPER_CONTRACT}:
+        raise ValueError(f"unsupported gripper value_contract: {contract!r}")
+    if contract == CONTINUOUS_GRIPPER_CONTRACT:
+        expected = {
+            "state": "continuous_actual_q",
+            "action": "continuous_target_q",
+        }
+        for vector_name, attribute in expected.items():
+            if components[vector_name][0].get("attribute") != attribute:
+                raise ValueError(
+                    f"continuous gripper {vector_name} must use attribute {attribute!r}"
+                )
+    return contract
 
 
 def enabled_cameras(schema: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...]:

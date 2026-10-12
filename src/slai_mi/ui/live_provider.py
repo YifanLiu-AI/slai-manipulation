@@ -74,12 +74,18 @@ class LiveStatusProvider:
         self._collection_start_requested = False
         self._collection_start_error: str | None = None
         self._collection_gesture = RepeatedChordGesture(
-            (int(Button.MENU), int(Button.FIT)), repeats=3, timeout_s=5.0
+            (int(Button.MENU), int(Button.FIT)), repeats=2, timeout_s=5.0
         )
 
     @staticmethod
     def _new_mouse() -> SpaceMouseProcess:
-        return SpaceMouseProcess(deadzone=0.12, stale_timeout=0.05, rate_hz=250.0)
+        # Use the same spacenavd-backed input path as teleoperation and collection.
+        return SpaceMouseProcess(
+            deadzone=0.12,
+            stale_timeout=0.05,
+            rate_hz=250.0,
+            backend="spnav",
+        )
 
     def start(self) -> None:
         self.capture.start()

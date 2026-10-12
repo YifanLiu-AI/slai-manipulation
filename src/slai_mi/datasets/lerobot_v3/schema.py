@@ -38,6 +38,9 @@ SOURCE_RESTARTS = "telemetry.source_restart_counts"
 VALIDITY_MASK = "telemetry.validity_mask"
 SPACEMOUSE_AXES = "telemetry.spacemouse_axes"
 SPACEMOUSE_BUTTONS = "telemetry.spacemouse_buttons"
+WRIST_MOTOR_POSITION_RAW = "telemetry.wrist_motor_position_raw"
+WRIST_MOTOR_GOAL_RAW = "telemetry.wrist_motor_goal_raw"
+WRIST_MOTOR_RATE_RAW_S = "telemetry.wrist_motor_rate_raw_s"
 CAMERA_SOURCE_NAMES = tuple(str(camera["role"]) for camera in CAMERA_SCHEMAS)
 STATE_SOURCE_NAMES = tuple(
     str(item["name"]) for item in INPUT_SCHEMA["synchronization"]["state_channels"]

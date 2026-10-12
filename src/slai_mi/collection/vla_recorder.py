@@ -29,8 +29,16 @@ from slai_mi.datasets.lerobot_v3.schema import (
     SPACEMOUSE_BUTTONS,
     UR5_TARGET_QD,
     VALIDITY_MASK,
+    WRIST_MOTOR_GOAL_RAW,
+    WRIST_MOTOR_POSITION_RAW,
+    WRIST_MOTOR_RATE_RAW_S,
 )
-from slai_mi.input_schema import compose_capture_vector, enabled_cameras
+from slai_mi.input_schema import (
+    CONTINUOUS_GRIPPER_CONTRACT,
+    compose_capture_vector,
+    enabled_cameras,
+    gripper_value_contract,
+)
 from slai_mi.rotation import convert_tcp_pose
 
 
@@ -149,6 +157,29 @@ def assemble_configured_frame(
         SPACEMOUSE_BUTTONS: np.asarray(mouse.buttons, dtype=np.int64),
         "task": task_prompt,
     }
+    if gripper_value_contract(schema) == CONTINUOUS_GRIPPER_CONTRACT:
+        gripper = inputs.channels["gripper"].value
+        frame.update(
+            {
+                "telemetry.gripper_position_raw": np.asarray(
+                    [gripper.position], dtype=np.int64
+                ),
+                "telemetry.gripper_target_position_raw": np.asarray(
+                    [gripper.target_position], dtype=np.int64
+                ),
+            }
+        )
+    if schema.get("telemetry", {}).get("wrist_motor", {}).get("enabled", False):
+        wrist = inputs.channels.get("wrist")
+        value = None if wrist is None else wrist.value
+        for key, attribute in (
+            (WRIST_MOTOR_POSITION_RAW, "motor_position_raw"),
+            (WRIST_MOTOR_GOAL_RAW, "motor_goal_raw"),
+            (WRIST_MOTOR_RATE_RAW_S, "motor_rate_raw_s"),
+        ):
+            if value is None or not hasattr(value, attribute):
+                raise ValueError(f"wrist motor telemetry is unavailable: {attribute}")
+            frame[key] = np.asarray(getattr(value, attribute), dtype=np.int64)
     validator(frame)
     return frame
 

@@ -111,6 +111,8 @@ def test_strategy_inspection_cli_is_read_only_and_lists_all_groups(capsys) -> No
     assert [item["strategy"] for item in output["strategies"]] == [
         "ur5e_wrist_8dof_collection",
         "ur5e_wrist_8dof_teleop",
+        "ur5e_wrist_gripper_9dof_collection",
+        "ur5e_wrist_gripper_dual_10dof_collection",
         "ur5e_wujihand_26dof_collection",
         "ur5e_wujihand_retargeting",
     ]

@@ -106,6 +106,19 @@ def _session(path: Path) -> dict[str, Any] | None:
     }
 
 
+def _dof_counts(dataset_root: Path) -> dict[str, int]:
+    """Read public 2DoF/3DoF counts from finalized aggregate metadata."""
+    aggregate_root = dataset_root.parent / "aggregates"
+    paths = {
+        "2DoF": aggregate_root / "task2-wrist-2dof" / "meta" / "info.json",
+        "3DoF": aggregate_root / "task2-no-wrist-motion" / "meta" / "info.json",
+    }
+    return {
+        label: max(0, int(_read_json(path).get("total_episodes", 0) or 0))
+        for label, path in paths.items()
+    }
+
+
 def build_collection_history(
     dataset_root: str | Path,
     *,
@@ -157,6 +170,7 @@ def build_collection_history(
     return {
         "dataset_root": str(root),
         "summary": summary,
+        "dof_counts": _dof_counts(root),
         "sessions": sessions[: max(0, int(limit))],
         "total_sessions": len(sessions),
     }

@@ -16,6 +16,7 @@ class EpisodeAction(str, Enum):
     START = "start"
     SAVE = "save"
     DISCARD = "discard"
+    HOME = "home"
     FINALIZE = "finalize"
 
 
@@ -65,6 +66,8 @@ class SpaceMouseEpisodeControls:
         if rising[self.menu_button]:
             self.recording = True
             return EpisodeAction.START
+        if rising[self.fit_button]:
+            return EpisodeAction.HOME
         return None
 
     def abort(self) -> None:

@@ -1,0 +1,11 @@
+schema_version: 1
+task:
+  id: task-01
+  instruction: Pick up the object and place it in the target.
+dataset_ref: ../dataset.yaml
+state_schema: task2_9dof
+control_profile_ref: ../controls/spacemouse_standard.yaml
+start_pose_ref: ../poses/tasks/task2_start.yaml
+hand_presets:
+  open: ../poses/tasks/block_into_box_open.yaml
+  grasp: ../poses/tasks/block_into_box_grasp.yaml

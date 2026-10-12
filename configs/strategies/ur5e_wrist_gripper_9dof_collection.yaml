@@ -1,0 +1,20 @@
+schema_version: 1
+strategy:
+  id: ur5e_wrist_gripper_9dof_collection
+  label: Continuous-position UR5e + ESP32/OpenRB wrist + interchangeable gripper 9DoF collection
+  status: ready
+  supported_apps: [collect_real]
+  required_hardware: [ur5, wrist_sensor, gripper, spacemouse, cameras]
+  disabled_hardware: [wujihand]
+  inputs: [spacemouse, wrist_master_esp32, collection_cameras]
+  outputs: [ur5e, wrist_slave_openrb, normalized_position_gripper]
+  control:
+    ur5e: spacemouse_twist
+    wrist: wrist_master_to_slave_auto_zero
+    gripper: hold_button_3_close_hold_button_4_open_continuous_position
+  physical_dof: 9
+dataset:
+  recorded_dof: 9
+  state_schema: task2_9dof_continuous
+  input_schema: configs/input_schemas/ur5e_wrist_gripper_9dof_continuous.yaml
+  note: Measured and commanded gripper positions are continuous [0,1]; adapter-native raw positions are retained as telemetry.

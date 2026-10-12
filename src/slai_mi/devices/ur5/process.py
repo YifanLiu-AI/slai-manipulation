@@ -10,8 +10,29 @@ from slai_mi.devices.driver_process import DriverProcess
 
 
 class UR5DriverProcess(DriverProcess):
-    def __init__(self, *, python: Path, host: str, fake: bool = False, watchdog_s: float = 0.25, max_linear_m_s: float = 0.02, max_angular_rad_s: float = 0.1):
-        arguments = ["--host", host, "--watchdog-s", str(watchdog_s), "--max-linear", str(max_linear_m_s), "--max-angular", str(max_angular_rad_s)]
+    def __init__(
+        self,
+        *,
+        python: Path,
+        host: str,
+        fake: bool = False,
+        watchdog_s: float = 0.25,
+        max_linear_m_s: float = 0.02,
+        max_angular_rad_s: float = 0.1,
+        min_tcp_z_m: float | None = None,
+    ):
+        arguments = [
+            "--host",
+            host,
+            "--watchdog-s",
+            str(watchdog_s),
+            "--max-linear",
+            str(max_linear_m_s),
+            "--max-angular",
+            str(max_angular_rad_s),
+        ]
+        if min_tcp_z_m is not None:
+            arguments.extend(("--min-tcp-z", str(min_tcp_z_m)))
         if fake:
             arguments.append("--fake")
         # The first control command uploads the RTDE control script and can take

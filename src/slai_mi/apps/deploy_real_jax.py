@@ -28,6 +28,7 @@ from slai_mi.devices.ur5.geometry import (
 )
 from slai_mi.devices.ur5.process import UR5DriverProcess
 from slai_mi.devices.wrist_sensor.limits import CONTROL_LIMITS_FE_RU
+from slai_mi.devices.wrist_sensor.teleop import prepare_dynamic_home
 from slai_mi.runtime.hardware_supervisor import HardwareProcessSupervisor
 from slai_mi.runtime.real_workflows import _SignalStop
 
@@ -306,10 +307,7 @@ class _WristOutput:
             client, load_output_v2_config(project_path(self.hardware["config"]))
         )
         try:
-            response = controller.inspect()
-            if not controller.output_zero_matches_config(response):
-                raise RuntimeError("OpenRB output zero does not match the calibrated profile")
-            state = controller.activate_at_current_output()
+            state, _baseline = prepare_dynamic_home(controller)
         except BaseException:
             client.close()
             raise

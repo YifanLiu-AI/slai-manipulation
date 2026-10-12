@@ -14,6 +14,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Self
 
+from .teleop import prepare_dynamic_home
+
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
 DEFAULT_BRIDGE_ROOT = PROJECT_ROOT / "third_party" / "02_Python_Client_CLI"
 DEFAULT_CONFIG = DEFAULT_BRIDGE_ROOT / "closed_loop_record" / "wrist_output_v2.yaml"
@@ -72,7 +74,7 @@ class OpenRBWristV2:
         with self._lock:
             if self._controller is None:
                 raise RuntimeError("OpenRB wrist is not started")
-            state = self._controller.prepare(auto_home_zero=True, force_home_zero=False)
+            state, _baseline = prepare_dynamic_home(self._controller)
             self._state = state
             self._home_started = True
             self._home_error = None

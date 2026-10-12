@@ -23,6 +23,7 @@ from slai_mi.input_schema import compose_capture_vector, enabled_cameras, load_i
 from slai_mi.ui.collection_frontend import (
     DashboardRuntime,
     build_handler,
+    configured_dataset_root,
     dashboard_status_template,
 )
 from slai_mi.ui.webrtc_preview import H264PreviewPublisher
@@ -55,7 +56,7 @@ class CollectionDashboardProvider:
         self._temperature_level = "unknown"
         self._camera_counts = {str(item["role"]): 0 for item in cameras}
         self._journal: CollectionEventJournal | None = None
-        self._dataset_root = Path(__file__).resolve().parents[3] / "data" / "lerobot"
+        self._dataset_root = configured_dataset_root()
 
     def start(self) -> None:
         self.preview.start()

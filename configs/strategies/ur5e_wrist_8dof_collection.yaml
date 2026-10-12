@@ -5,7 +5,7 @@ strategy:
   status: ready
   supported_apps: [collect_real]
   required_hardware: [ur5, wrist_sensor, spacemouse, cameras]
-  disabled_hardware: [wujihand]
+  disabled_hardware: [wujihand, gripper]
   inputs: [spacemouse, wrist_master_esp32, collection_cameras]
   outputs: [ur5e, wrist_slave_openrb]
   control:

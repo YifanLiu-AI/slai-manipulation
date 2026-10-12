@@ -7,6 +7,10 @@ SHORTCUTS = ROOT / "shell" / "slai-shortcuts.sh"
 README = ROOT / "README.md"
 
 PUBLIC_SHORTCUTS = {
+    "Home",
+    "jax-home",
+    "jax-slow",
+    "jax-normal",
     "s",
     "sr",
     "srx",
@@ -16,6 +20,8 @@ PUBLIC_SHORTCUTS = {
     "scx",
     "scw",
     "scwx",
+    "sc9",
+    "sc9x",
     "scc",
     "scs",
     "scsx",
@@ -95,3 +101,25 @@ def test_scx_respects_an_explicit_episode_limit() -> None:
     arguments = _scx_arguments("--episodes", "3")
     assert "--continuous" not in arguments
     assert arguments[:2] == ["--episodes", "3"]
+
+
+def test_sc9x_hands_dashboard_port_from_preview_to_collector_and_restores_it() -> None:
+    command = (
+        f'source "{SHORTCUTS}"\n'
+        "systemctl() { printf 'systemctl:%s\\n' \"$*\"; "
+        "case \"$*\" in *is-active*) return 0 ;; esac; }\n"
+        "_scollect() { printf 'collect:%s\\n' \"$*\"; }\n"
+        "sc9x --episodes 2\n"
+    )
+    result = subprocess.run(
+        ["bash", "-c", command], check=True, capture_output=True, text=True
+    )
+    lines = result.stdout.splitlines()
+
+    assert lines[0] == "systemctl:--user is-active --quiet slai-collection-ui.service"
+    assert lines[1] == "systemctl:--user stop slai-collection-ui.service"
+    assert lines[2].startswith(
+        "collect:--strategy ur5e_wrist_gripper_9dof_collection "
+        "--task configs/tasks/task2.yaml --episodes 2"
+    )
+    assert lines[-1] == "systemctl:--user start slai-collection-ui.service"
